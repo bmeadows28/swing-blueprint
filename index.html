@@ -467,7 +467,7 @@ async function startProcessing(url){
   procCanvas.height = Math.round((proc.videoHeight || 270) * scale);
 
   const duration = proc.duration || 2;
-  const SAMPLE_COUNT = 36;
+  const SAMPLE_COUNT = 22;
   const sampleTimes = [];
   for(let i=0;i<SAMPLE_COUNT;i++){
     sampleTimes.push((duration * i) / (SAMPLE_COUNT - 1));
@@ -492,6 +492,9 @@ async function startProcessing(url){
             frames.push({ t, lm: result.landmarks[0] });
           }
           setStatus('Reading your swing…', Math.min(95, 10 + (i/sampleTimes.length)*80));
+          // explicit yield — lets the browser breathe between frames instead of
+          // seeing sustained uninterrupted work, which can trigger a page-unresponsive kill
+          await new Promise(r=>setTimeout(r, 60));
         }
       })(),
       new Promise((_,rej)=>setTimeout(()=>rej(new Error('processing timed out')), 60000))
