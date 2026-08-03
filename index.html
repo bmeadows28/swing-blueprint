@@ -141,6 +141,15 @@
     background:#000;
     border-radius:10px;
     overflow:hidden;
+    max-height:70vh;
+    display:flex;
+    justify-content:center;
+  }
+  .video-stage video{
+    width:auto;
+    max-width:100%;
+    max-height:70vh;
+    object-fit:contain;
   }
   .video-stage canvas.overlay{
     position:absolute;
@@ -148,6 +157,10 @@
     width:100%;
     height:100%;
     pointer-events:none;
+  }
+  .video-stage canvas.calib-overlay{
+    pointer-events:auto;
+    cursor:crosshair;
   }
   .keyframe-rail{
     display:flex;
@@ -169,6 +182,18 @@
   }
   .keyframe-btn:hover{background:var(--cream-2);}
   .keyframe-btn.active{background:var(--navy);color:var(--cream);border-color:var(--navy);}
+  .narration-controls{
+    display:flex;
+    gap:10px;
+    margin-top:14px;
+  }
+  .narration-caption{
+    margin-top:10px;
+    min-height:1.4em;
+    font-size:0.95rem;
+    color:var(--navy);
+    font-style:italic;
+  }
   .metrics-grid{
     display:grid;
     grid-template-columns:repeat(auto-fit,minmax(230px,1fr));
@@ -253,7 +278,7 @@
     <div class="sub">Click two points on the ball's target line (e.g. along a club laid on the ground, or the ball-to-target direction). Optional — skip if the camera is already square to the target line.</div>
     <div class="video-stage" id="calibStage">
       <video id="calibVideo" muted playsinline></video>
-      <canvas class="overlay" id="calibCanvas"></canvas>
+      <canvas class="overlay calib-overlay" id="calibCanvas"></canvas>
     </div>
     <div style="margin-top:14px;">
       <button class="btn small" id="skipCalibBtn">Skip calibration</button>
@@ -269,6 +294,11 @@
       <canvas class="overlay" id="resultCanvas"></canvas>
     </div>
     <div class="keyframe-rail" id="keyframeRail"></div>
+    <div class="narration-controls">
+      <button class="btn gold small" id="playNarrationBtn">▶ Play Voice Breakdown</button>
+      <button class="btn small hidden" id="stopNarrationBtn">■ Stop</button>
+    </div>
+    <div class="narration-caption" id="narrationCaption"></div>
   </div>
 
   <div class="card hidden" id="metricsCard">
@@ -469,6 +499,24 @@ async function startProcessing(url){
 
   const duration = proc.duration || 2;
   const SAMPLE_COUNT = 22;
+
+  async function sampleAt(t, tsOffset){
+    const clampedT = Math.min(t, Math.max(duration - 0.05, 0));
+    await new Promise((res)=>{
+      const onSeeked = ()=>{ proc.removeEventListener('seeked', onSeeked); res(); };
+      proc.addEventListener('seeked', onSeeked, {once:true});
+      proc.currentTime = clampedT;
+      setTimeout(()=>{ proc.removeEventListener('seeked', onSeeked); res(); }, 2000);
+    });
+    procCtx.drawImage(proc, 0, 0, procCanvas.width, procCanvas.height);
+    const ts = Math.round(clampedT*1000) + tsOffset;
+    const result = poseLandmarker.detectForVideo(procCanvas, ts);
+    if(result.landmarks && result.landmarks.length){
+      return { t: clampedT, lm: result.landmarks[0] };
+    }
+    return null;
+  }
+
   const sampleTimes = [];
   for(let i=0;i<SAMPLE_COUNT;i++){
     sampleTimes.push((duration * i) / (SAMPLE_COUNT - 1));
@@ -479,21 +527,33 @@ async function startProcessing(url){
     await Promise.race([
       (async ()=>{
         for(let i=0;i<sampleTimes.length;i++){
-          const t = Math.min(sampleTimes[i], Math.max(duration - 0.05, 0));
-          await new Promise((res, rej)=>{
-            const onSeeked = ()=>{ proc.removeEventListener('seeked', onSeeked); res(); };
-            proc.addEventListener('seeked', onSeeked, {once:true});
-            proc.currentTime = t;
-            setTimeout(()=>{ proc.removeEventListener('seeked', onSeeked); res(); }, 2000);
-          });
-          procCtx.drawImage(proc, 0, 0, procCanvas.width, procCanvas.height);
-          const ts = Math.round(t*1000) + i;
-          const result = poseLandmarker.detectForVideo(procCanvas, ts);
-          if(result.landmarks && result.landmarks.length){
-            frames.push({ t, lm: result.landmarks[0] });
-          }
-          setStatus('Reading your swing…', Math.min(95, 10 + (i/sampleTimes.length)*80));
+          const f = await sampleAt(sampleTimes[i], i);
+          if(f) frames.push(f);
+          setStatus('Reading your swing…', Math.min(70, 10 + (i/sampleTimes.length)*60));
           await new Promise(r=>setTimeout(r, 60));
+        }
+
+        if(frames.length >= 6){
+          frames.sort((a,b)=>a.t-b.t);
+          let bestI = 0, bestSpeed = -1;
+          for(let i=1;i<frames.length;i++){
+            const a = frames[i-1].lm, b = frames[i].lm;
+            const aw = { x:(a[15].x+a[16].x)/2, y:(a[15].y+a[16].y)/2 };
+            const bw = { x:(b[15].x+b[16].x)/2, y:(b[15].y+b[16].y)/2 };
+            const dt = frames[i].t - frames[i-1].t || 0.001;
+            const speed = Math.hypot(bw.x-aw.x, bw.y-aw.y)/dt;
+            if(speed > bestSpeed){ bestSpeed = speed; bestI = i; }
+          }
+          const windowStart = Math.max(0, frames[Math.max(bestI-1,0)].t);
+          const windowEnd = Math.min(duration, frames[Math.min(bestI+1,frames.length-1)].t);
+          const REFINE_COUNT = 12;
+          for(let i=0;i<REFINE_COUNT;i++){
+            const t = windowStart + ((windowEnd-windowStart) * i) / Math.max(REFINE_COUNT-1,1);
+            const f = await sampleAt(t, 1000+i);
+            if(f) frames.push(f);
+            setStatus('Refining impact…', Math.min(95, 70 + (i/REFINE_COUNT)*25));
+            await new Promise(r=>setTimeout(r, 60));
+          }
         }
       })(),
       new Promise((_,rej)=>setTimeout(()=>rej(new Error('processing timed out')), 60000))
@@ -531,6 +591,7 @@ function wristPt(lm){
 }
 
 function detectKeyframes(){
+  frames.sort((a,b)=>a.t-b.t);
   const n = frames.length;
   const wy = frames.map(f=>wristPt(f.lm).y);
   let topI = 0, topVal = Infinity;
@@ -712,7 +773,74 @@ function buildBlueprint(){
   lines.push('');
   lines.push(`One thing at a time: pick whichever number above feels most "off" to you, work that alone for a few sessions, then re-upload and compare. Trying to fix everything at once is how most self-taught swings get stuck.`);
   document.getElementById('blueprintText').textContent = lines.join('\n');
+
+  buildNarrationSegments();
 }
+
+let narrationSegments = [];
+
+function buildNarrationSegments(){
+  const c = computed;
+  narrationSegments = [
+    {
+      key: 'address',
+      text: `Let's start at address. Watch the hip line and shoulder line here — ${c.stanceRatio<0.9 ? "your stance is a bit narrow relative to your shoulders." : c.stanceRatio>1.3 ? "your stance is nice and wide, good stable base." : "your stance width looks solid relative to your shoulders."} ${targetLine ? "Alignment is " + c.alignmentDeg + " degrees off your target line." : "We didn't calibrate a target line on this one, so alignment isn't shown."}`
+    },
+    {
+      key: 'top',
+      text: `Now the top of the backswing. See the gap between the shoulder line and the hip line? That's your separation — about ${c.separation.toFixed(0)} degrees. ${c.separation<15 ? "That's tight, a connected turn, good for consistency but there may be some power left on the table." : c.separation>35 ? "That's a big gap for us to estimate from one camera angle, so take it with a grain of salt." : "That's a healthy amount of coil for a powerful, repeatable turn."}`
+    },
+    {
+      key: 'impact',
+      text: `Right here, impact. Watch the spine line compared to address — it's moved about ${c.spineChange.toFixed(0)} degrees, and the head has drifted ${(c.headDrift*100).toFixed(0)} percent of your shoulder width. ${(c.headDrift<0.12 && c.spineChange<8) ? "That's a stable center, which is exactly what repeating your strike depends on." : "Everything downstream of contact, path, low point, face, is built off where that center stays right here, so this is worth your attention."}`
+    },
+    {
+      key: 'finish',
+      text: `And the finish. Shoulders kept turning about ${c.throughRotation.toFixed(0)} degrees past impact. ${c.throughRotation>25 ? "That's a full rotation through the ball, which is what you want to see." : "That looks like it might be getting cut off — worth checking if you're finishing the swing or stopping it."}`
+    }
+  ];
+}
+
+let narrationPlaying = false;
+
+function playNarration(){
+  if(!('speechSynthesis' in window)){
+    alert('Voice narration is not supported in this browser.');
+    return;
+  }
+  if(narrationSegments.length===0) return;
+  narrationPlaying = true;
+  document.getElementById('playNarrationBtn').classList.add('hidden');
+  document.getElementById('stopNarrationBtn').classList.remove('hidden');
+
+  let i = 0;
+  function speakNext(){
+    if(!narrationPlaying || i>=narrationSegments.length){
+      stopNarration();
+      return;
+    }
+    const seg = narrationSegments[i];
+    jumpToKey(seg.key);
+    document.getElementById('narrationCaption').textContent = seg.text;
+    const utter = new SpeechSynthesisUtterance(seg.text);
+    utter.rate = 1.0;
+    utter.onend = ()=>{ i++; if(narrationPlaying) speakNext(); };
+    utter.onerror = ()=>{ i++; if(narrationPlaying) speakNext(); };
+    speechSynthesis.speak(utter);
+  }
+  speakNext();
+}
+
+function stopNarration(){
+  narrationPlaying = false;
+  speechSynthesis.cancel();
+  document.getElementById('playNarrationBtn').classList.remove('hidden');
+  document.getElementById('stopNarrationBtn').classList.add('hidden');
+  document.getElementById('narrationCaption').textContent = '';
+}
+
+document.getElementById('playNarrationBtn').addEventListener('click', playNarration);
+document.getElementById('stopNarrationBtn').addEventListener('click', stopNarration);
 
 function setupResultVideo(url){
   resultVideo = document.getElementById('resultVideo');
@@ -737,14 +865,66 @@ function nearestFrameIndex(t){
   return best;
 }
 
+function extendLine(p1, p2, factor){
+  const dx = p2.x - p1.x, dy = p2.y - p1.y;
+  return {
+    a: { x: p1.x - dx*factor, y: p1.y - dy*factor },
+    b: { x: p2.x + dx*factor, y: p2.y + dy*factor }
+  };
+}
+
+function drawTeachingLine(ctx, p1, p2, color, label, w, h, factor){
+  const ext = extendLine(p1, p2, factor==null?0.35:factor);
+  ctx.save();
+  ctx.strokeStyle = color;
+  ctx.lineWidth = 3;
+  ctx.setLineDash([2,2]);
+  ctx.beginPath();
+  ctx.moveTo(ext.a.x*w, ext.a.y*h);
+  ctx.lineTo(ext.b.x*w, ext.b.y*h);
+  ctx.stroke();
+  ctx.setLineDash([]);
+  if(label){
+    ctx.font = '600 13px Public Sans, sans-serif';
+    ctx.fillStyle = color;
+    ctx.strokeStyle = 'rgba(0,0,0,0.6)';
+    ctx.lineWidth = 3;
+    const lx = ext.b.x*w + 6, ly = ext.b.y*h;
+    ctx.strokeText(label, lx, ly);
+    ctx.fillText(label, lx, ly);
+  }
+  ctx.restore();
+}
+
+function drawTelestration(ctx, lm, w, h){
+  const lSh = lm[L.lShoulder], rSh = lm[L.rShoulder];
+  const lHip = lm[L.lHip], rHip = lm[L.rHip];
+  const shM = { x:(lSh.x+rSh.x)/2, y:(lSh.y+rSh.y)/2 };
+  const hipM = { x:(lHip.x+rHip.x)/2, y:(lHip.y+rHip.y)/2 };
+
+  drawTeachingLine(ctx, lHip, rHip, '#E4C378', 'Hips', w, h, 0.3);
+  drawTeachingLine(ctx, lSh, rSh, '#C6A15B', 'Shoulders', w, h, 0.3);
+  drawTeachingLine(ctx, hipM, shM, '#F6F2E9', 'Spine', w, h, 0.25);
+
+  if(targetLine){
+    ctx.save();
+    ctx.strokeStyle = '#7fb0ff';
+    ctx.lineWidth = 2;
+    ctx.setLineDash([6,4]);
+    ctx.beginPath();
+    ctx.moveTo(targetLine.x1*w, targetLine.y1*h);
+    ctx.lineTo(targetLine.x2*w, targetLine.y2*h);
+    ctx.stroke();
+    ctx.restore();
+  }
+}
+
 function drawOverlayAtCurrentTime(){
   if(!resultCtx) return;
   const idx = nearestFrameIndex(resultVideo.currentTime);
   const lm = frames[idx].lm;
   resultCtx.clearRect(0,0,resultCanvas.width,resultCanvas.height);
-  const du = new DrawingUtils(resultCtx);
-  du.drawLandmarks(lm, {radius:3, color:'#E4C378'});
-  du.drawConnectors(lm, PoseLandmarker.POSE_CONNECTIONS, {color:'#C6A15B', lineWidth:2});
+  drawTelestration(resultCtx, lm, resultCanvas.width, resultCanvas.height);
 }
 
 function renderKeyframeRail(){
