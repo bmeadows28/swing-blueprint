@@ -408,15 +408,26 @@ function handleFile(file){
   cv.addEventListener('loadeddata', ()=>{
     const canvas = document.getElementById('calibCanvas');
     canvas.width = cv.videoWidth; canvas.height = cv.videoHeight;
+    syncOverlayToVideo(cv, canvas);
     setupCalibClicks(cv, canvas);
   }, {once:true});
   window.__pendingVideoURL = url;
+}
+
+function syncOverlayToVideo(video, canvas){
+  const vRect = video.getBoundingClientRect();
+  const sRect = video.parentElement.getBoundingClientRect();
+  canvas.style.width = vRect.width + 'px';
+  canvas.style.height = vRect.height + 'px';
+  canvas.style.left = (vRect.left - sRect.left) + 'px';
+  canvas.style.top = (vRect.top - sRect.top) + 'px';
 }
 
 function setupCalibClicks(video, canvas){
   const ctx = canvas.getContext('2d');
   let pts = [];
   function draw(){
+    syncOverlayToVideo(video, canvas);
     ctx.clearRect(0,0,canvas.width,canvas.height);
     ctx.drawImage(video,0,0,canvas.width,canvas.height);
     ctx.strokeStyle = '#C6A15B'; ctx.lineWidth = 3;
@@ -850,6 +861,7 @@ function setupResultVideo(url){
     resultCanvas.width = resultVideo.videoWidth;
     resultCanvas.height = resultVideo.videoHeight;
     resultCtx = resultCanvas.getContext('2d');
+    syncOverlayToVideo(resultVideo, resultCanvas);
     renderKeyframeRail();
     jumpToKey('address');
   }, {once:true});
@@ -921,11 +933,16 @@ function drawTelestration(ctx, lm, w, h){
 
 function drawOverlayAtCurrentTime(){
   if(!resultCtx) return;
+  syncOverlayToVideo(resultVideo, resultCanvas);
   const idx = nearestFrameIndex(resultVideo.currentTime);
   const lm = frames[idx].lm;
   resultCtx.clearRect(0,0,resultCanvas.width,resultCanvas.height);
   drawTelestration(resultCtx, lm, resultCanvas.width, resultCanvas.height);
 }
+
+window.addEventListener('resize', ()=>{
+  if(resultVideo && resultCanvas) syncOverlayToVideo(resultVideo, resultCanvas);
+});
 
 function renderKeyframeRail(){
   const rail = document.getElementById('keyframeRail');
