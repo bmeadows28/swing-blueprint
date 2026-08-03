@@ -78,7 +78,7 @@
     margin-bottom:18px;
   }
   .upload-zone{
-    border:2px dashed var(--gold);
+    border:2px solid var(--gold);
     border-radius:var(--radius);
     padding:40px 20px;
     text-align:center;
@@ -89,7 +89,7 @@
     box-sizing:border-box;
   }
   .upload-zone:hover{background:var(--cream-2);}
-  .upload-zone input{display:none;}
+  .upload-zone input{position:absolute;width:1px;height:1px;opacity:0;overflow:hidden;pointer-events:none;}
   .btn{
     display:inline-block;
     background:var(--navy);
@@ -212,41 +212,7 @@
     margin-top:14px;
   }
   .flag-box b{color:var(--navy);}
-  .routine-list{
-    list-style:none;
-    padding:0;
-    margin:0;
-  }
-  .routine-list li{
-    display:flex;
-    align-items:center;
-    gap:10px;
-    padding:10px 0;
-    border-bottom:1px solid var(--cream-2);
-  }
-  .routine-list li:last-child{border-bottom:none;}
-  .routine-list input[type="checkbox"]{
-    width:18px;height:18px;accent-color:var(--gold);
-  }
-  .routine-list label{flex:1;font-size:0.95rem;}
-  .timer-display{
-    font-family:'Frank Ruhl Libre',serif;
-    font-size:2.2rem;
-    color:var(--navy);
-    text-align:center;
-    margin:10px 0;
-  }
-  .routine-controls{display:flex;gap:10px;justify-content:center;margin-top:8px;}
   .hidden{display:none !important;}
-  .calib-hint{
-    font-size:0.85rem;
-    color:var(--gold);
-    background:var(--navy);
-    padding:8px 14px;
-    border-radius:8px;
-    margin-top:10px;
-    display:inline-block;
-  }
   footer{
     text-align:center;
     color:var(--muted);
@@ -333,7 +299,7 @@ const L = {
 };
 
 let poseLandmarker = null;
-let frames = []; // {t, landmarks}
+let frames = [];
 let keyIdx = { address:0, top:0, impact:0, finish:0 };
 
 window.addEventListener('error', (e)=>{
@@ -342,7 +308,7 @@ window.addEventListener('error', (e)=>{
 window.addEventListener('unhandledrejection', (e)=>{
   console.error('Unhandled rejection', e.reason);
 });
-let targetLine = null; // {x1,y1,x2,y2} normalized
+let targetLine = null;
 let resultVideo, resultCanvas, resultCtx;
 
 const statusLine = document.getElementById('statusLine');
@@ -362,7 +328,6 @@ async function initModel(){
   const vision = await FilesetResolver.forVisionTasks(
     "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm"
   );
-  // CPU delegate first — iOS Safari's WebGL/GPU delegate for MediaPipe is unreliable
   poseLandmarker = await PoseLandmarker.createFromOptions(vision, {
     baseOptions:{ modelAssetPath: MODEL_URL, delegate:"CPU" },
     runningMode:"VIDEO",
@@ -451,6 +416,8 @@ function setupCalibClicks(video, canvas){
 document.getElementById('skipCalibBtn').addEventListener('click', ()=>{
   targetLine = null;
   document.getElementById('calibCard').classList.add('hidden');
+  const cv = document.getElementById('calibVideo');
+  cv.pause(); cv.removeAttribute('src'); cv.load();
   startProcessing(window.__pendingVideoURL).catch(err=>{
     console.error('startProcessing failed', err);
     setStatus('Something went wrong reading the video: ' + err.message, 0);
@@ -458,6 +425,8 @@ document.getElementById('skipCalibBtn').addEventListener('click', ()=>{
 });
 document.getElementById('confirmCalibBtn').addEventListener('click', ()=>{
   document.getElementById('calibCard').classList.add('hidden');
+  const cv = document.getElementById('calibVideo');
+  cv.pause(); cv.removeAttribute('src'); cv.load();
   startProcessing(window.__pendingVideoURL).catch(err=>{
     console.error('startProcessing failed', err);
     setStatus('Something went wrong reading the video: ' + err.message, 0);
@@ -470,8 +439,7 @@ async function startProcessing(url){
 
   const proc = document.createElement('video');
   proc.src = url; proc.muted = true; proc.playsInline = true; proc.setAttribute('webkit-playsinline','true');
-  // iOS Safari often won't decode frames for a video element that's never attached to the page —
-  // attach it off-screen but laid out (not display:none) so decoding actually runs.
+  proc.preload = 'auto';
   proc.style.position = 'fixed';
   proc.style.left = '-9999px';
   proc.style.width = '2px';
@@ -480,7 +448,7 @@ async function startProcessing(url){
 
   try{
     await Promise.race([
-      new Promise(res=>proc.addEventListener('loadeddata', res, {once:true})),
+      new Promise(res=>proc.addEventListener('loadedmetadata', res, {once:true})),
       new Promise((_,rej)=>setTimeout(()=>rej(new Error('video load timed out')), 15000))
     ]);
   }catch(err){
@@ -489,42 +457,42 @@ async function startProcessing(url){
     proc.remove();
     return;
   }
-  proc.playbackRate = 0.35; // slow down for denser sampling
 
-  // Downscale each frame before running pose detection — full-resolution iPhone
-  // video pushed through the model was very likely what was exhausting Safari's
-  // memory and causing it to silently kill/reload the tab mid-processing.
   const procCanvas = document.createElement('canvas');
   const procCtx = procCanvas.getContext('2d', { willReadFrequently: true });
-  const targetW = 480;
+  const targetW = 400;
   const scale = targetW / (proc.videoWidth || targetW);
   procCanvas.width = targetW;
   procCanvas.height = Math.round((proc.videoHeight || 270) * scale);
 
+  const duration = proc.duration || 2;
+  const SAMPLE_COUNT = 36;
+  const sampleTimes = [];
+  for(let i=0;i<SAMPLE_COUNT;i++){
+    sampleTimes.push((duration * i) / (SAMPLE_COUNT - 1));
+  }
+
   frames = [];
-  let frameCounter = 0;
   try{
     await Promise.race([
-      new Promise((resolve)=>{
-        function step(){
-          if(proc.ended || proc.paused){ resolve(); return; }
-          frameCounter++;
-          // process every other rendered frame to further cut memory/CPU churn
-          if(frameCounter % 2 === 0){
-            procCtx.drawImage(proc, 0, 0, procCanvas.width, procCanvas.height);
-            const ts = Math.round(proc.currentTime*1000);
-            const result = poseLandmarker.detectForVideo(procCanvas, ts);
-            if(result.landmarks && result.landmarks.length){
-              frames.push({ t: proc.currentTime, lm: result.landmarks[0] });
-            }
+      (async ()=>{
+        for(let i=0;i<sampleTimes.length;i++){
+          const t = Math.min(sampleTimes[i], Math.max(duration - 0.05, 0));
+          await new Promise((res)=>{
+            const onSeeked = ()=>{ proc.removeEventListener('seeked', onSeeked); res(); };
+            proc.addEventListener('seeked', onSeeked, {once:true});
+            proc.currentTime = t;
+            setTimeout(()=>{ proc.removeEventListener('seeked', onSeeked); res(); }, 2000);
+          });
+          procCtx.drawImage(proc, 0, 0, procCanvas.width, procCanvas.height);
+          const ts = Math.round(t*1000) + i;
+          const result = poseLandmarker.detectForVideo(procCanvas, ts);
+          if(result.landmarks && result.landmarks.length){
+            frames.push({ t, lm: result.landmarks[0] });
           }
-          const pct = Math.min(95, 10 + (proc.currentTime/(proc.duration||1))*80);
-          setStatus('Reading your swing…', pct);
-          requestAnimationFrame(step);
+          setStatus('Reading your swing…', Math.min(95, 10 + (i/sampleTimes.length)*80));
         }
-        proc.play().then(()=>{ requestAnimationFrame(step); }).catch(err=>{ console.error('play failed', err); resolve(); });
-        proc.addEventListener('ended', resolve, {once:true});
-      }),
+      })(),
       new Promise((_,rej)=>setTimeout(()=>rej(new Error('processing timed out')), 60000))
     ]);
   }catch(err){
@@ -561,20 +529,17 @@ function wristPt(lm){
 
 function detectKeyframes(){
   const n = frames.length;
-  const wy = frames.map(f=>wristPt(f.lm).y); // smaller y = higher (top of backswing)
-  // top of backswing: minimum y in first 75% of frames
+  const wy = frames.map(f=>wristPt(f.lm).y);
   let topI = 0, topVal = Infinity;
   for(let i=0;i<Math.floor(n*0.75);i++){
     if(wy[i] < topVal){ topVal = wy[i]; topI = i; }
   }
-  // speed between consecutive frames (wrist midpoint)
   let speeds = [0];
   for(let i=1;i<n;i++){
     const a = wristPt(frames[i-1].lm), b = wristPt(frames[i].lm);
     const dt = frames[i].t - frames[i-1].t || 0.001;
     speeds.push(Math.hypot(b.x-a.x,b.y-a.y)/dt);
   }
-  // impact: max speed after top
   let impactI = topI, impactVal = -1;
   for(let i=topI;i<n;i++){
     if(speeds[i] > impactVal){ impactVal = speeds[i]; impactI = i; }
@@ -596,12 +561,10 @@ function buildMetrics(){
   const fA = frames[keyIdx.address].lm, fT = frames[keyIdx.top].lm,
         fI = frames[keyIdx.impact].lm, fF = frames[keyIdx.finish].lm;
 
-  // Tempo ratio
   const backT = frames[keyIdx.top].t - frames[keyIdx.address].t;
   const downT = frames[keyIdx.impact].t - frames[keyIdx.top].t;
   const tempoRatio = downT>0 ? (backT/downT) : 0;
 
-  // Shoulder/hip rotation proxy at top vs address (2D angle of the line between landmarks)
   const shoulderAngleA = angleDeg(fA[L.lShoulder], fA[L.rShoulder]);
   const shoulderAngleT = angleDeg(fT[L.lShoulder], fT[L.rShoulder]);
   const hipAngleA = angleDeg(fA[L.lHip], fA[L.rHip]);
@@ -610,11 +573,9 @@ function buildMetrics(){
   const hipTurn = Math.abs(hipAngleT - hipAngleA);
   const separation = Math.max(0, shoulderTurn - hipTurn);
 
-  // Head movement: nose position drift address -> impact, normalized to shoulder width
   const shoulderWidthA = dist(fA[L.lShoulder], fA[L.rShoulder]);
   const headDrift = dist(fA[L.nose], fI[L.nose]) / (shoulderWidthA||1);
 
-  // Spine angle: mid-hip to mid-shoulder vs vertical, address vs impact
   function spineAngle(f){
     const hipM = mid(f[L.lHip], f[L.rHip]);
     const shM = mid(f[L.lShoulder], f[L.rShoulder]);
@@ -623,11 +584,9 @@ function buildMetrics(){
   const spineA = spineAngle(fA), spineI = spineAngle(fI);
   const spineChange = Math.abs(spineI - spineA);
 
-  // Stance width vs shoulder width at address
   const stanceWidth = dist(fA[L.lAnkle], fA[L.rAnkle]);
   const stanceRatio = stanceWidth / (shoulderWidthA||1);
 
-  // Alignment vs target line (if calibrated)
   let alignmentNote = 'Not calibrated — film square to target for this reading.';
   let alignmentDeg = null;
   if(targetLine){
@@ -637,7 +596,6 @@ function buildMetrics(){
     alignmentNote = alignmentDeg + '° from your target line at address';
   }
 
-  // Release/extension: lead arm elbow angle impact -> just after (proxy using impact vs finish-ish midpoint)
   const midAfterI = frames[Math.min(keyIdx.impact + Math.round((keyIdx.finish-keyIdx.impact)*0.25), keyIdx.finish)].lm;
   function elbowAngle(f, side){
     const sh = f[side==='l'?L.lShoulder:L.rShoulder];
@@ -650,7 +608,6 @@ function buildMetrics(){
   const extensionAfter = elbowAngle(midAfterI,'l');
   const releaseDelta = extensionAfter - extensionAtImpact;
 
-  // Follow-through: shoulder rotation continuation impact -> finish
   const shoulderAngleI = angleDeg(fI[L.lShoulder], fI[L.rShoulder]);
   const shoulderAngleF = angleDeg(fF[L.lShoulder], fF[L.rShoulder]);
   const throughRotation = Math.abs(shoulderAngleF - shoulderAngleI);
