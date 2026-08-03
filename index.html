@@ -85,6 +85,8 @@
     background:var(--cream);
     cursor:pointer;
     transition:background 0.15s;
+    overflow:hidden;
+    box-sizing:border-box;
   }
   .upload-zone:hover{background:var(--cream-2);}
   .upload-zone input{display:none;}
@@ -489,16 +491,32 @@ async function startProcessing(url){
   }
   proc.playbackRate = 0.35; // slow down for denser sampling
 
+  // Downscale each frame before running pose detection — full-resolution iPhone
+  // video pushed through the model was very likely what was exhausting Safari's
+  // memory and causing it to silently kill/reload the tab mid-processing.
+  const procCanvas = document.createElement('canvas');
+  const procCtx = procCanvas.getContext('2d', { willReadFrequently: true });
+  const targetW = 480;
+  const scale = targetW / (proc.videoWidth || targetW);
+  procCanvas.width = targetW;
+  procCanvas.height = Math.round((proc.videoHeight || 270) * scale);
+
   frames = [];
+  let frameCounter = 0;
   try{
     await Promise.race([
       new Promise((resolve)=>{
         function step(){
           if(proc.ended || proc.paused){ resolve(); return; }
-          const ts = Math.round(proc.currentTime*1000);
-          const result = poseLandmarker.detectForVideo(proc, ts);
-          if(result.landmarks && result.landmarks.length){
-            frames.push({ t: proc.currentTime, lm: result.landmarks[0] });
+          frameCounter++;
+          // process every other rendered frame to further cut memory/CPU churn
+          if(frameCounter % 2 === 0){
+            procCtx.drawImage(proc, 0, 0, procCanvas.width, procCanvas.height);
+            const ts = Math.round(proc.currentTime*1000);
+            const result = poseLandmarker.detectForVideo(procCanvas, ts);
+            if(result.landmarks && result.landmarks.length){
+              frames.push({ t: proc.currentTime, lm: result.landmarks[0] });
+            }
           }
           const pct = Math.min(95, 10 + (proc.currentTime/(proc.duration||1))*80);
           setStatus('Reading your swing…', pct);
