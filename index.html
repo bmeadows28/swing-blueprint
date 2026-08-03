@@ -313,30 +313,6 @@
     <div class="blueprint-text" id="blueprintText"></div>
   </div>
 
-  <div class="card" id="routineCard">
-    <h2>Pre-shot &amp; post-shot routine</h2>
-    <div class="sub">This isn't pulled from the video — it's a simple tracker to build a consistent routine, the way tour players do. Saved on this device.</div>
-    <ul class="routine-list" id="preList">
-      <li><input type="checkbox" id="pre1"><label for="pre1">Pick a precise target</label></li>
-      <li><input type="checkbox" id="pre2"><label for="pre2">Take a practice swing feeling the shot</label></li>
-      <li><input type="checkbox" id="pre3"><label for="pre3">Set the clubface, then the body</label></li>
-      <li><input type="checkbox" id="pre4"><label for="pre4">One last look at the target, then go</label></li>
-    </ul>
-    <div class="timer-display" id="timerDisplay">00:00</div>
-    <div class="routine-controls">
-      <button class="btn small" id="timerStartBtn">Start</button>
-      <button class="btn small" id="timerResetBtn">Reset</button>
-    </div>
-    <div style="margin-top:16px;font-size:0.85rem;color:var(--muted);">Tour average pre-shot routine is roughly 20–30 seconds from behind-the-ball look to takeaway. Consistency in timing matters more than the exact number.</div>
-    <div style="margin-top:18px;padding-top:16px;border-top:1px solid var(--cream-2);">
-      <div style="font-weight:600;color:var(--navy);margin-bottom:8px;">Post-shot</div>
-      <ul class="routine-list">
-        <li><input type="checkbox" id="post1"><label for="post1">Watch the ball all the way down</label></li>
-        <li><input type="checkbox" id="post2"><label for="post2">One honest word on cause (not outcome)</label></li>
-        <li><input type="checkbox" id="post3"><label for="post3">Let it go, walk to the next shot</label></li>
-      </ul>
-    </div>
-  </div>
 
 </main>
 
@@ -375,8 +351,9 @@ async function initModel(){
   const vision = await FilesetResolver.forVisionTasks(
     "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm"
   );
+  // CPU delegate first — iOS Safari's WebGL/GPU delegate for MediaPipe is unreliable
   poseLandmarker = await PoseLandmarker.createFromOptions(vision, {
-    baseOptions:{ modelAssetPath: MODEL_URL, delegate:"GPU" },
+    baseOptions:{ modelAssetPath: MODEL_URL, delegate:"CPU" },
     runningMode:"VIDEO",
     numPoses:1
   });
@@ -384,13 +361,13 @@ async function initModel(){
   setTimeout(()=>statusLine.classList.add('hidden'), 800);
 }
 initModel().catch(async (e)=>{
-  // fall back to CPU delegate if GPU isn't available
+  console.error('CPU delegate failed, trying GPU', e);
   try{
     const vision = await FilesetResolver.forVisionTasks(
       "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm"
     );
     poseLandmarker = await PoseLandmarker.createFromOptions(vision, {
-      baseOptions:{ modelAssetPath: MODEL_URL, delegate:"CPU" },
+      baseOptions:{ modelAssetPath: MODEL_URL, delegate:"GPU" },
       runningMode:"VIDEO",
       numPoses:1
     });
@@ -475,26 +452,55 @@ async function startProcessing(url){
   setStatus('Reading your swing…', 10);
 
   const proc = document.createElement('video');
-  proc.src = url; proc.muted = true; proc.playsInline = true;
-  await new Promise(res=>proc.addEventListener('loadeddata', res, {once:true}));
+  proc.src = url; proc.muted = true; proc.playsInline = true; proc.setAttribute('webkit-playsinline','true');
+  // iOS Safari often won't decode frames for a video element that's never attached to the page —
+  // attach it off-screen but laid out (not display:none) so decoding actually runs.
+  proc.style.position = 'fixed';
+  proc.style.left = '-9999px';
+  proc.style.width = '2px';
+  proc.style.height = '2px';
+  document.body.appendChild(proc);
+
+  try{
+    await Promise.race([
+      new Promise(res=>proc.addEventListener('loadeddata', res, {once:true})),
+      new Promise((_,rej)=>setTimeout(()=>rej(new Error('video load timed out')), 15000))
+    ]);
+  }catch(err){
+    setStatus('This video would not load. Try a shorter clip (under 10s) or a different format.', 0);
+    console.error(err);
+    proc.remove();
+    return;
+  }
   proc.playbackRate = 0.35; // slow down for denser sampling
 
   frames = [];
-  await new Promise((resolve)=>{
-    function step(){
-      if(proc.ended || proc.paused){ resolve(); return; }
-      const ts = Math.round(proc.currentTime*1000);
-      const result = poseLandmarker.detectForVideo(proc, ts);
-      if(result.landmarks && result.landmarks.length){
-        frames.push({ t: proc.currentTime, lm: result.landmarks[0] });
-      }
-      const pct = Math.min(95, 10 + (proc.currentTime/(proc.duration||1))*80);
-      setStatus('Reading your swing…', pct);
-      requestAnimationFrame(step);
-    }
-    proc.play().then(()=>{ requestAnimationFrame(step); });
-    proc.addEventListener('ended', resolve, {once:true});
-  });
+  try{
+    await Promise.race([
+      new Promise((resolve)=>{
+        function step(){
+          if(proc.ended || proc.paused){ resolve(); return; }
+          const ts = Math.round(proc.currentTime*1000);
+          const result = poseLandmarker.detectForVideo(proc, ts);
+          if(result.landmarks && result.landmarks.length){
+            frames.push({ t: proc.currentTime, lm: result.landmarks[0] });
+          }
+          const pct = Math.min(95, 10 + (proc.currentTime/(proc.duration||1))*80);
+          setStatus('Reading your swing…', pct);
+          requestAnimationFrame(step);
+        }
+        proc.play().then(()=>{ requestAnimationFrame(step); }).catch(err=>{ console.error('play failed', err); resolve(); });
+        proc.addEventListener('ended', resolve, {once:true});
+      }),
+      new Promise((_,rej)=>setTimeout(()=>rej(new Error('processing timed out')), 60000))
+    ]);
+  }catch(err){
+    setStatus('Processing took too long and timed out. Try a shorter clip.', 0);
+    console.error(err);
+    proc.remove();
+    return;
+  }
+  proc.remove();
 
   if(frames.length < 6){
     setStatus('Could not track enough of the swing — try a clip with the full body visible, good light, and a still camera.', 0);
@@ -749,34 +755,6 @@ function jumpToKey(key){
   document.querySelectorAll('.keyframe-btn').forEach(b=>b.classList.toggle('active', b.dataset.key===key));
 }
 
-// Routine tracker
-const routineIds = ['pre1','pre2','pre3','pre4','post1','post2','post3'];
-routineIds.forEach(id=>{
-  const el = document.getElementById(id);
-  const saved = localStorage.getItem('routine_'+id);
-  if(saved==='true') el.checked = true;
-  el.addEventListener('change', ()=>localStorage.setItem('routine_'+id, el.checked));
-});
-
-let timerInterval = null, timerSeconds = 0;
-const timerDisplay = document.getElementById('timerDisplay');
-function formatTime(s){
-  const m = Math.floor(s/60), sec = s%60;
-  return `${String(m).padStart(2,'0')}:${String(sec).padStart(2,'0')}`;
-}
-document.getElementById('timerStartBtn').addEventListener('click', (e)=>{
-  if(timerInterval){
-    clearInterval(timerInterval); timerInterval=null; e.target.textContent='Start';
-  } else {
-    timerInterval = setInterval(()=>{ timerSeconds++; timerDisplay.textContent = formatTime(timerSeconds); }, 1000);
-    e.target.textContent='Stop';
-  }
-});
-document.getElementById('timerResetBtn').addEventListener('click', ()=>{
-  clearInterval(timerInterval); timerInterval=null; timerSeconds=0;
-  timerDisplay.textContent='00:00';
-  document.getElementById('timerStartBtn').textContent='Start';
-});
 </script>
 </body>
 </html>
