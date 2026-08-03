@@ -90,7 +90,45 @@
     box-sizing:border-box;
   }
   .upload-zone:hover{background:var(--cream-2);}
-  .upload-zone input{position:absolute;top:0;left:0;width:1px;height:1px;opacity:0;overflow:hidden;pointer-events:none;}
+  .upload-zone input{
+    position:absolute;
+    inset:0;
+    width:100%;
+    height:100%;
+    opacity:0;
+    cursor:pointer;
+  }
+  .upload-icon-box{
+    width:64px;
+    height:64px;
+    margin:0 auto;
+    border:2px solid var(--gold);
+    border-radius:12px;
+    background:#fff;
+    display:flex;
+    align-items:center;
+    justify-content:center;
+    font-size:1.8rem;
+    pointer-events:none;
+  }
+  .filming-tips{
+    list-style:none;
+    padding:0;
+    margin:0 0 18px;
+    font-size:0.88rem;
+    color:var(--navy-2);
+  }
+  .filming-tips li{
+    padding:6px 0 6px 22px;
+    position:relative;
+  }
+  .filming-tips li::before{
+    content:'✓';
+    position:absolute;
+    left:0;
+    color:var(--gold);
+    font-weight:700;
+  }
   .btn{
     display:inline-block;
     background:var(--navy);
@@ -157,10 +195,6 @@
     width:100%;
     height:100%;
     pointer-events:none;
-  }
-  .video-stage canvas.calib-overlay{
-    pointer-events:auto;
-    cursor:crosshair;
   }
   .keyframe-rail{
     display:flex;
@@ -260,29 +294,20 @@
 
   <div class="card" id="uploadCard">
     <h2>Upload your swing</h2>
-    <div class="sub">Down-the-line or face-on, full body in frame, normal speed (not slow-mo). Trim close to just the swing, right from your stance through the finish — extra footage before or after can throw off auto-detection.</div>
+    <ul class="filming-tips">
+      <li>Normal speed — <b>no slow motion</b>, it confuses auto-detection</li>
+      <li>Down-the-line or face-on, full body in frame</li>
+      <li>Trim tight: start right at your stance, end just after the finish — <b>2-6 seconds</b> total, nothing extra</li>
+    </ul>
     <label class="upload-zone" id="uploadZone">
       <input type="file" id="fileInput" accept="video/*">
-      <div style="font-size:2rem;">🎥</div>
-      <div style="margin-top:8px;font-weight:600;color:var(--navy);">Tap to choose a video, or drop one here</div>
-      <div style="font-size:0.85rem;color:var(--muted);margin-top:4px;">MP4 or MOV, works best under 15 seconds</div>
+      <div class="upload-icon-box">🎥</div>
+      <div style="margin-top:14px;font-weight:600;color:var(--navy);">Tap to choose a video, or drop one here</div>
+      <div style="font-size:0.85rem;color:var(--muted);margin-top:4px;">MP4 or MOV</div>
     </label>
     <div class="status-line hidden" id="statusLine">
       <span id="statusText">Loading pose model…</span>
       <div class="progress-track"><div class="progress-fill" id="progressFill"></div></div>
-    </div>
-  </div>
-
-  <div class="card hidden" id="calibCard">
-    <h2>One-time: set your target line</h2>
-    <div class="sub">Click two points on the ball's target line (e.g. along a club laid on the ground, or the ball-to-target direction). Optional — skip if the camera is already square to the target line.</div>
-    <div class="video-stage" id="calibStage">
-      <video id="calibVideo" muted playsinline></video>
-      <canvas class="overlay calib-overlay" id="calibCanvas"></canvas>
-    </div>
-    <div style="margin-top:14px;">
-      <button class="btn small" id="skipCalibBtn">Skip calibration</button>
-      <button class="btn gold small hidden" id="confirmCalibBtn">Use this line</button>
     </div>
   </div>
 
@@ -340,7 +365,6 @@ window.addEventListener('error', (e)=>{
 window.addEventListener('unhandledrejection', (e)=>{
   console.error('Unhandled rejection', e.reason);
 });
-let targetLine = null;
 let resultVideo, resultCanvas, resultCtx;
 
 const statusLine = document.getElementById('statusLine');
@@ -401,17 +425,10 @@ uploadZone.addEventListener('drop', e=>{
 
 function handleFile(file){
   const url = URL.createObjectURL(file);
-  document.getElementById('calibCard').classList.remove('hidden');
-  const cv = document.getElementById('calibVideo');
-  cv.src = url;
-  cv.currentTime = 0.05;
-  cv.addEventListener('loadeddata', ()=>{
-    const canvas = document.getElementById('calibCanvas');
-    canvas.width = cv.videoWidth; canvas.height = cv.videoHeight;
-    syncOverlayToVideo(cv, canvas);
-    setupCalibClicks(cv, canvas);
-  }, {once:true});
-  window.__pendingVideoURL = url;
+  startProcessing(url).catch(err=>{
+    console.error('startProcessing failed', err);
+    setStatus('Something went wrong reading the video: ' + err.message, 0);
+  });
 }
 
 function syncOverlayToVideo(video, canvas){
@@ -422,59 +439,6 @@ function syncOverlayToVideo(video, canvas){
   canvas.style.left = (vRect.left - sRect.left) + 'px';
   canvas.style.top = (vRect.top - sRect.top) + 'px';
 }
-
-function setupCalibClicks(video, canvas){
-  const ctx = canvas.getContext('2d');
-  let pts = [];
-  function draw(){
-    syncOverlayToVideo(video, canvas);
-    ctx.clearRect(0,0,canvas.width,canvas.height);
-    ctx.drawImage(video,0,0,canvas.width,canvas.height);
-    ctx.strokeStyle = '#C6A15B'; ctx.lineWidth = 3;
-    pts.forEach(p=>{
-      ctx.beginPath(); ctx.arc(p.x,p.y,7,0,7); ctx.fillStyle='#C6A15B'; ctx.fill();
-    });
-    if(pts.length===2){
-      ctx.beginPath(); ctx.moveTo(pts[0].x,pts[0].y); ctx.lineTo(pts[1].x,pts[1].y); ctx.stroke();
-    }
-  }
-  draw();
-  canvas.addEventListener('click', (e)=>{
-    const rect = canvas.getBoundingClientRect();
-    const x = (e.clientX-rect.left)*(canvas.width/rect.width);
-    const y = (e.clientY-rect.top)*(canvas.height/rect.height);
-    if(pts.length>=2) pts = [];
-    pts.push({x,y});
-    draw();
-    if(pts.length===2){
-      document.getElementById('confirmCalibBtn').classList.remove('hidden');
-      targetLine = {
-        x1: pts[0].x/canvas.width, y1: pts[0].y/canvas.height,
-        x2: pts[1].x/canvas.width, y2: pts[1].y/canvas.height
-      };
-    }
-  });
-}
-
-document.getElementById('skipCalibBtn').addEventListener('click', ()=>{
-  targetLine = null;
-  document.getElementById('calibCard').classList.add('hidden');
-  const cv = document.getElementById('calibVideo');
-  cv.pause(); cv.removeAttribute('src'); cv.load();
-  startProcessing(window.__pendingVideoURL).catch(err=>{
-    console.error('startProcessing failed', err);
-    setStatus('Something went wrong reading the video: ' + err.message, 0);
-  });
-});
-document.getElementById('confirmCalibBtn').addEventListener('click', ()=>{
-  document.getElementById('calibCard').classList.add('hidden');
-  const cv = document.getElementById('calibVideo');
-  cv.pause(); cv.removeAttribute('src'); cv.load();
-  startProcessing(window.__pendingVideoURL).catch(err=>{
-    console.error('startProcessing failed', err);
-    setStatus('Something went wrong reading the video: ' + err.message, 0);
-  });
-});
 
 async function startProcessing(url){
   document.getElementById('uploadCard').querySelector('.upload-zone').style.opacity='0.5';
@@ -662,15 +626,6 @@ function buildMetrics(){
   const stanceWidth = dist(fA[L.lAnkle], fA[L.rAnkle]);
   const stanceRatio = stanceWidth / (shoulderWidthA||1);
 
-  let alignmentNote = 'Not calibrated — film square to target for this reading.';
-  let alignmentDeg = null;
-  if(targetLine){
-    const footAngle = angleDeg(fA[L.lAnkle], fA[L.rAnkle]);
-    const lineAngle = angleDeg({x:targetLine.x1,y:targetLine.y1}, {x:targetLine.x2,y:targetLine.y2});
-    alignmentDeg = Math.round(Math.abs(footAngle-lineAngle));
-    alignmentNote = alignmentDeg + '° from your target line at address';
-  }
-
   const midAfterI = frames[Math.min(keyIdx.impact + Math.round((keyIdx.finish-keyIdx.impact)*0.25), keyIdx.finish)].lm;
   function elbowAngle(f, side){
     const sh = f[side==='l'?L.lShoulder:L.rShoulder];
@@ -689,7 +644,7 @@ function buildMetrics(){
 
   computed = {
     tempoRatio, backT, downT, separation, shoulderTurn, hipTurn,
-    headDrift, spineChange, stanceRatio, alignmentDeg, alignmentNote,
+    headDrift, spineChange, stanceRatio,
     releaseDelta, throughRotation
   };
 
@@ -732,11 +687,6 @@ function renderMetrics(){
       read: c.stanceRatio<0.9 ? 'Narrower stance — fine for control, may limit power.' : c.stanceRatio>1.3 ? 'Wide stance — stable base, watch hip turn room.' : 'In a common range relative to shoulder width.'
     },
     {
-      label:'Alignment at Address',
-      value: c.alignmentDeg!=null ? `${c.alignmentDeg}°` : '—',
-      read: c.alignmentNote
-    },
-    {
       label:'Release (lead arm)',
       value: `${c.releaseDelta>=0?'+':''}${c.releaseDelta.toFixed(0)}°`,
       read: c.releaseDelta>10 ? 'Good extension through the ball.' : 'Limited extension just after impact — may point to an early flip or hold-off.'
@@ -755,6 +705,78 @@ function renderMetrics(){
     </div>`).join('');
 }
 
+// --- Coaching triage engine ---
+// Instead of listing every metric neutrally, rank the standard swing checkpoints
+// by how far each sits from a normal range, then coach the single highest-priority
+// one first, the way an instructor would in a real lesson: one thing at a time,
+// named and explained, with a specific, standard drill attached.
+
+function getFaultCatalog(c){
+  return [
+    {
+      key:'tempo',
+      label:'Tempo',
+      severity: Math.abs(c.tempoRatio-3)/3,
+      diagnose: `Your tempo ratio is ${c.tempoRatio.toFixed(1)}:1, backswing to downswing, against a tour-average close to 3:1. ${c.tempoRatio>3 ? "Your transition is on the slow, long side relative to your backswing." : "Your downswing is quick relative to your backswing — a common cause of rushed, handsy contact."}`,
+      why:`Tempo comes first because everything downstream, sequencing, separation, release, is built on top of a repeatable rhythm. It's the foundation the rest of the swing sits on.`,
+      drillName:'The 3-Count Drill',
+      drill:`Count "one" smoothly to the top of your backswing, then "two-three" down through impact, out loud, on ten slow rehearsal swings. Then carry that same count into five real swings.`
+    },
+    {
+      key:'separation',
+      label:'Hip-Shoulder Separation',
+      severity: Math.max(0, Math.abs(c.separation-30)-10)/30,
+      diagnose: `Shoulders turned about ${c.shoulderTurn.toFixed(0)}° against hips at ${c.hipTurn.toFixed(0)}° to the top, roughly ${c.separation.toFixed(0)}° of separation. ${c.separation<20 ? "That's a tight, connected turn — comfortable, but likely leaving power on the table." : "That's a wide gap for one camera angle to estimate reliably, and can point to the hips sliding rather than truly turning."}`,
+      why:`Separation between hips and shoulders is where a swing generates its coil. Too little and there's no engine behind it; too much (especially from sliding rather than turning) makes the downswing timing unpredictable.`,
+      drillName: c.separation<20 ? 'The Resistance Turn Drill' : 'The Quiet Hips Drill',
+      drill: c.separation<20
+        ? `Take your normal stance, then make backswings while feeling your hips resist turning as long as possible while the shoulders keep going. A few reps of this exaggeration, then blend it back to a normal swing.`
+        : `Make slow-motion backswings focusing on turning your hips less than feels natural, letting the shoulders do the work of building tension against them, rather than letting the whole lower body slide.`
+    },
+    {
+      key:'headspine',
+      label:'Head & Spine Stability',
+      severity: Math.max(c.headDrift-0.12, 0)/0.12 * 0.6 + Math.max(c.spineChange-8,0)/8 * 0.4,
+      diagnose: `Head moved about ${(c.headDrift*100).toFixed(0)}% of shoulder width from address to impact, and spine angle changed about ${c.spineChange.toFixed(0)}°. Movement here is often the root cause of inconsistent strike, since everything downstream, path, low point, face, is built off where the body's center stays through impact.`,
+      why:`A moving center is the single most common source of fat and thin shots. Nothing else about the swing matters much if the low point of contact is inconsistent for this reason.`,
+      drillName:'The Headcover Drill',
+      drill:`Tuck a headcover or small towel lightly under your chin at address. Make slow swings without letting it drop — it'll fall immediately if the head or spine angle moves too much. Build up to full-speed swings once you can hold it through five slow reps.`
+    },
+    {
+      key:'release',
+      label:'Release Through Impact',
+      severity: Math.max(10-c.releaseDelta, 0)/10,
+      diagnose: `Lead arm extension changed ${c.releaseDelta.toFixed(0)}° just after impact. That's limited extension, which often points to an early flip or a hold-off through the ball rather than a full release.`,
+      why:`How the arms extend right after impact determines whether the clubface is still turning over (adding curve and inconsistency) or has already released cleanly. This is usually a timing issue tied to the transition, not a strength issue.`,
+      drillName:'The Towel Drill',
+      drill:`Tuck a small towel under both armpits at address and make half-swings without letting either end drop, focusing on both arms extending fully toward the target through impact before folding into the finish.`
+    },
+    {
+      key:'finish',
+      label:'Follow-Through & Finish',
+      severity: Math.max(25-c.throughRotation, 0)/25,
+      diagnose: `Shoulders kept turning about ${c.throughRotation.toFixed(0)}° past impact into the finish. That rotation looks abbreviated — a common sign the swing is being cut off rather than finished.`,
+      why:`A full, balanced finish is usually the result of a swing that was committed all the way through, not a cosmetic add-on. Golfers who stop early at impact are almost always decelerating into the ball, not through it.`,
+      drillName:'The Balance Finish Drill',
+      drill:`After every practice swing, hold your finish position for a full three-second count before relaxing. If you can't hold it in balance, that's the signal the swing needs to commit further through impact, not just at it.`
+    }
+  ];
+}
+
+let sessionHistory = [];
+function loadHistory(){
+  try{
+    sessionHistory = JSON.parse(localStorage.getItem('swingBlueprintHistory') || '[]');
+  }catch(e){ sessionHistory = []; }
+}
+function saveHistorySession(entry){
+  sessionHistory.push(entry);
+  if(sessionHistory.length>20) sessionHistory = sessionHistory.slice(-20);
+  try{ localStorage.setItem('swingBlueprintHistory', JSON.stringify(sessionHistory)); }catch(e){}
+}
+
+let primaryFault = null;
+
 function buildBlueprint(){
   const c = computed;
   const lines = [];
@@ -766,24 +788,57 @@ function buildBlueprint(){
     lines.push('');
     lines.push(`This almost always means the clip had extra footage before or after the actual swing (standing around, walking, camera settling), or was recorded in slow motion — both throw off automatic position detection since it assumes frame one is address and the fastest motion in the clip is impact.`);
     lines.push('');
-    lines.push(`For a clean read: film at normal speed (not slow-mo), start the clip right as you're settling into your stance, and stop it shortly after the finish. A tight 3-6 second clip with nothing but the swing in it works best.`);
+    lines.push(`Trim to just the swing at normal speed, 2-6 seconds, and re-upload before treating anything below as real guidance.`);
+    document.getElementById('blueprintText').textContent = lines.join('\n');
+    primaryFault = null;
+    narrationSegments = [];
+    return;
+  }
+
+  loadHistory();
+  const catalog = getFaultCatalog(c);
+  catalog.sort((a,b)=>b.severity-a.severity);
+  primaryFault = catalog[0];
+  const runnerUp = catalog[1];
+
+  const last = sessionHistory.length ? sessionHistory[sessionHistory.length-1] : null;
+
+  lines.push(`YOUR FOCUS FOR THIS SESSION: ${primaryFault.label}`);
+  lines.push('');
+  if(last && last.key===primaryFault.key){
+    const improved = primaryFault.severity < last.severity - 0.03;
+    lines.push(improved
+      ? `You worked on this same thing last time, and it's moved in the right direction. Keep going with it rather than switching focus yet.`
+      : `This is the same focus as last session. That's normal — most swing changes take more than one rep to stick. Stay on this before adding anything else.`);
     lines.push('');
-    lines.push(`Raw numbers below for reference, but re-upload a tighter clip before treating any of this as guidance.`);
+  } else if(last){
+    const lastFaultNow = catalog.find(f=>f.key===last.key);
+    if(lastFaultNow && lastFaultNow.severity < 0.15){
+      lines.push(`Good news on last session's focus (${last.label}) — that's cleaned up. Moving on to the next priority.`);
+    } else {
+      lines.push(`Last session's focus was ${last.label}. That's not fully resolved yet, but today's clip is flagging ${primaryFault.label} as the more urgent issue right now — worth keeping both in mind.`);
+    }
+    lines.push('');
+  } else {
+    lines.push(`This is your first upload, so here's where to start.`);
     lines.push('');
   }
 
-  lines.push(`Here's the cause-and-effect read on this swing, in plain terms:`);
+  lines.push(primaryFault.diagnose);
   lines.push('');
-  lines.push(`Tempo: your ratio of ${c.tempoRatio.toFixed(1)}:1 (backswing to downswing) compares to a tour-average close to 3:1. ${c.tempoRatio>3.6 ? "A slower transition can help sequencing, but if it's inconsistent swing to swing, that's usually the first thing to steady before anything else." : c.tempoRatio<2.4 ? "A quick transition often shows up as a rushed downswing — if contact feels handsy or thin, this is a good first place to slow things down." : "This is a workable tempo — the bigger question is whether it repeats swing after swing."}`);
+  lines.push(`Why this first: ${primaryFault.why}`);
   lines.push('');
-  lines.push(`Rotation: shoulders turned about ${c.shoulderTurn.toFixed(0)}° against hips at ${c.hipTurn.toFixed(0)}° to the top, roughly ${c.separation.toFixed(0)}° of separation. ${c.separation<15 ? "That's a fairly connected turn — good for consistency, though it may leave some power on the table." : c.separation>35 ? "That's a lot of separation for one camera angle to estimate — if that number feels high, it may be picking up hip slide rather than pure rotation, worth checking on video." : "That's in a reasonable range for a repeatable, powerful turn."}`);
+  lines.push(`Drill: ${primaryFault.drillName} — ${primaryFault.drill}`);
   lines.push('');
-  lines.push(`Head and spine: head moved about ${(c.headDrift*100).toFixed(0)}% of shoulder width from address to impact, and spine angle changed about ${c.spineChange.toFixed(0)}°. ${(c.headDrift<0.12 && c.spineChange<8) ? "Both are stable — that's a strong foundation for repeating contact." : "Movement here is often the root cause of inconsistent strike, since everything downstream (path, low point, face) is built off where the body's center stays through impact."}`);
-  lines.push('');
-  lines.push(`Release and finish: lead arm extension changed ${c.releaseDelta.toFixed(0)}° just after impact, and the shoulders kept turning about ${c.throughRotation.toFixed(0)}° more into the finish. ${(c.releaseDelta>10 && c.throughRotation>25) ? "Both point to a swing that's finishing through the ball rather than at it, which is exactly what you want to see." : "If either of these feels short, it's rarely the arms alone — it usually traces back to the tempo and separation numbers above."}`);
-  lines.push('');
-  lines.push(`One thing at a time: pick whichever number above feels most "off" to you, work that alone for a few sessions, then re-upload and compare. Trying to fix everything at once is how most self-taught swings get stuck.`);
+  if(runnerUp && runnerUp.severity>0.1){
+    lines.push(`On deck once this settles: ${runnerUp.label}. Not today's focus, but worth knowing it's next in line.`);
+    lines.push('');
+  }
+  lines.push(`Re-upload after a few practice sessions on this one thing — the read will pick up whether it's moved before suggesting anything new.`);
+
   document.getElementById('blueprintText').textContent = lines.join('\n');
+
+  saveHistorySession({ date: new Date().toISOString(), key: primaryFault.key, label: primaryFault.label, severity: primaryFault.severity });
 
   buildNarrationSegments();
 }
@@ -792,24 +847,39 @@ let narrationSegments = [];
 
 function buildNarrationSegments(){
   const c = computed;
+  if(!primaryFault){ narrationSegments = []; return; }
+  const focusByStage = {
+    tempo: 'top', separation: 'top', headspine: 'impact', release: 'impact', finish: 'finish'
+  };
+  const focusStage = focusByStage[primaryFault.key] || 'address';
+
   narrationSegments = [
     {
-      key: 'address',
-      text: `Let's start at address. Watch the hip line and shoulder line here — ${c.stanceRatio<0.9 ? "your stance is a bit narrow relative to your shoulders." : c.stanceRatio>1.3 ? "your stance is nice and wide, good stable base." : "your stance width looks solid relative to your shoulders."} ${targetLine ? "Alignment is " + c.alignmentDeg + " degrees off your target line." : "We didn't calibrate a target line on this one, so alignment isn't shown."}`
+      key:'address',
+      text: focusStage==='address'
+        ? `Here's address, and this is where today's focus starts. ${primaryFault.diagnose}`
+        : `Let's start at address. Stance width is ${c.stanceRatio.toFixed(2)} times your shoulder width, a reasonable base to work from.`
     },
     {
-      key: 'top',
-      text: `Now the top of the backswing. See the gap between the shoulder line and the hip line? That's your separation — about ${c.separation.toFixed(0)} degrees. ${c.separation<15 ? "That's tight, a connected turn, good for consistency but there may be some power left on the table." : c.separation>35 ? "That's a big gap for us to estimate from one camera angle, so take it with a grain of salt." : "That's a healthy amount of coil for a powerful, repeatable turn."}`
+      key:'top',
+      text: focusStage==='top'
+        ? `This is the top of the backswing, and this is today's focus. ${primaryFault.diagnose}`
+        : `Now the top of the backswing. Shoulders turned about ${c.shoulderTurn.toFixed(0)} degrees against hips at ${c.hipTurn.toFixed(0)} degrees.`
     },
     {
-      key: 'impact',
-      text: `Right here, impact. Watch the spine line compared to address — it's moved about ${c.spineChange.toFixed(0)} degrees, and the head has drifted ${(c.headDrift*100).toFixed(0)} percent of your shoulder width. ${(c.headDrift<0.12 && c.spineChange<8) ? "That's a stable center, which is exactly what repeating your strike depends on." : "Everything downstream of contact, path, low point, face, is built off where that center stays right here, so this is worth your attention."}`
+      key:'impact',
+      text: focusStage==='impact'
+        ? `Right here at impact is today's focus. ${primaryFault.diagnose}`
+        : `Impact. Head moved about ${(c.headDrift*100).toFixed(0)} percent of shoulder width from address, spine angle changed about ${c.spineChange.toFixed(0)} degrees.`
     },
     {
-      key: 'finish',
-      text: `And the finish. Shoulders kept turning about ${c.throughRotation.toFixed(0)} degrees past impact. ${c.throughRotation>25 ? "That's a full rotation through the ball, which is what you want to see." : "That looks like it might be getting cut off — worth checking if you're finishing the swing or stopping it."}`
+      key:'finish',
+      text: focusStage==='finish'
+        ? `And the finish, today's focus. ${primaryFault.diagnose}`
+        : `And the finish. Shoulders kept turning about ${c.throughRotation.toFixed(0)} degrees past impact.`
     }
   ];
+  narrationSegments[narrationSegments.length-1].text += ` Drill to work on: ${primaryFault.drillName}. ${primaryFault.drill}`;
 }
 
 let narrationPlaying = false;
@@ -917,18 +987,6 @@ function drawTelestration(ctx, lm, w, h){
   drawTeachingLine(ctx, lHip, rHip, '#E4C378', 'Hips', w, h, 0.3);
   drawTeachingLine(ctx, lSh, rSh, '#C6A15B', 'Shoulders', w, h, 0.3);
   drawTeachingLine(ctx, hipM, shM, '#F6F2E9', 'Spine', w, h, 0.25);
-
-  if(targetLine){
-    ctx.save();
-    ctx.strokeStyle = '#7fb0ff';
-    ctx.lineWidth = 2;
-    ctx.setLineDash([6,4]);
-    ctx.beginPath();
-    ctx.moveTo(targetLine.x1*w, targetLine.y1*h);
-    ctx.lineTo(targetLine.x2*w, targetLine.y2*h);
-    ctx.stroke();
-    ctx.restore();
-  }
 }
 
 function drawOverlayAtCurrentTime(){
