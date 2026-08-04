@@ -4,8 +4,14 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Swing Blueprint — Body Mechanics Analyzer</title>
-<script src="https://cdn.jsdelivr.net/npm/eruda"></script>
-<script>eruda.init();</script>
+<script>
+  if (location.search.includes('debug=1')) {
+    var s = document.createElement('script');
+    s.src = 'https://cdn.jsdelivr.net/npm/eruda';
+    s.onload = function(){ eruda.init(); };
+    document.head.appendChild(s);
+  }
+</script>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Frank+Ruhl+Libre:wght@500;700;900&family=Public+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
 <style>
@@ -549,6 +555,16 @@ async function startProcessing(url){
   setStatus('Detecting key positions…', 96);
   detectKeyframes();
   buildMetrics();
+  function getCausalNote(primary, runnerUp){
+  if(!runnerUp) return null;
+  const links = {
+    'separation->headspine': `Worth noting: limited hip-shoulder separation often shows up downstream as head or spine movement — the body compensates for a lack of coil by sliding instead of turning.`,
+    'separation->release': `Worth noting: tight separation can also rush the downswing, which is a common cause of an early release.`,
+    'headspine->release': `Worth noting: head and spine movement through impact often forces late hand compensations, which can look like an early or held-off release.`,
+    'tempo->separation': `Worth noting: rushed tempo often prevents the hips and shoulders from separating properly in transition.`
+  };
+  return links[`${primary.key}->${runnerUp.key}`] || null;
+}
   buildBlueprint();
   setupResultVideo(url);
 
@@ -830,8 +846,10 @@ function buildBlueprint(){
   lines.push('');
   lines.push(`Drill: ${primaryFault.drillName} — ${primaryFault.drill}`);
   lines.push('');
-  if(runnerUp && runnerUp.severity>0.1){
+    if(runnerUp && runnerUp.severity>0.1){
     lines.push(`On deck once this settles: ${runnerUp.label}. Not today's focus, but worth knowing it's next in line.`);
+    const causal = getCausalNote(primaryFault, runnerUp);
+    if(causal){ lines.push(causal); }
     lines.push('');
   }
   lines.push(`Re-upload after a few practice sessions on this one thing — the read will pick up whether it's moved before suggesting anything new.`);
@@ -978,15 +996,78 @@ function drawTeachingLine(ctx, p1, p2, color, label, w, h, factor){
   ctx.restore();
 }
 
-function drawTelestration(ctx, lm, w, h){
+function drawHeadMarker(ctx, lm, w, h){
+  const addr = frames[keyIdx.address].lm[L.nose];
+  const cur = lm[L.nose];
+  ctx.save();
+  ctx.beginPath();
+  ctx.arc(addr.x*w, addr.y*h, 9, 0, Math.PI*2);
+  ctx.strokeStyle = 'rgba(246,242,233,0.7)';
+  ctx.lineWidth = 2;
+  ctx.setLineDash([3,3]);
+  ctx.stroke();
+  ctx.setLineDash([]);
+  ctx.font = '600 12px Public Sans, sans-serif';
+  ctx.fillStyle = 'rgba(246,242,233,0.9)';
+  ctx.fillText('Address', addr.x*w+12, addr.y*h+4);
+
+  ctx.beginPath();
+  ctx.arc(cur.x*w, cur.y*h, 9, 0, Math.PI*2);
+  ctx.fillStyle = '#E4C378';
+  ctx.fill();
+  ctx.font = '600 12px Public Sans, sans-serif';
+  ctx.fillStyle = '#E4C378';
+  ctx.strokeStyle = 'rgba(0,0,0,0.6)';
+  ctx.lineWidth = 3;
+  ctx.strokeText('Head', cur.x*w+12, cur.y*h-8);
+  ctx.fillText('Head', cur.x*w+12, cur.y*h-8);
+  ctx.restore();
+}
+
+function drawWristPath(ctx, w, h, uptoIdx){
+  ctx.save();
+  ctx.strokeStyle = 'rgba(198,161,91,0.6)';
+  ctx.lineWidth = 2.5;
+  ctx.beginPath();
+  for(let i=0;i<=uptoIdx;i++){
+    const p = wristPt(frames[i].lm);
+    if(i===0) ctx.moveTo(p.x*w, p.y*h); else ctx.lineTo(p.x*w, p.y*h);
+  }
+  ctx.stroke();
+  ctx.restore();
+}
+
+function drawTelestration(ctx, lm, idx, w, h){
   const lSh = lm[L.lShoulder], rSh = lm[L.rShoulder];
   const lHip = lm[L.lHip], rHip = lm[L.rHip];
-  const shM = { x:(lSh.x+rSh.x)/2, y:(lSh.y+rSh.y)/2 };
-  const hipM = { x:(lHip.x+rHip.x)/2, y:(lHip.y+rHip.y)/2 };
+  const shM = mid(lSh, rSh);
+  const hipM = mid(lHip, rHip);
 
-  drawTeachingLine(ctx, lHip, rHip, '#E4C378', 'Hips', w, h, 0.3);
-  drawTeachingLine(ctx, lSh, rSh, '#C6A15B', 'Shoulders', w, h, 0.3);
-  drawTeachingLine(ctx, hipM, shM, '#F6F2E9', 'Spine', w, h, 0.25);
+  if(!primaryFault){
+    drawTeachingLine(ctx, lSh, rSh, '#C6A15B', null, w, h, 0.25);
+    return;
+  }
+
+  switch(primaryFault.key){
+    case 'separation':
+      drawTeachingLine(ctx, lHip, rHip, '#E4C378', 'Hips', w, h, 0.3);
+      drawTeachingLine(ctx, lSh, rSh, '#C6A15B', 'Shoulders', w, h, 0.3);
+      break;
+    case 'headspine':
+      drawTeachingLine(ctx, hipM, shM, '#F6F2E9', 'Spine', w, h, 0.25);
+      drawHeadMarker(ctx, lm, w, h);
+      break;
+    case 'release':
+      drawTeachingLine(ctx, lSh, lm[L.lWrist], '#C6A15B', 'Lead arm', w, h, 0.05);
+      break;
+    case 'finish':
+      drawTeachingLine(ctx, lSh, rSh, '#C6A15B', 'Shoulders', w, h, 0.3);
+      break;
+    case 'tempo':
+    default:
+      drawWristPath(ctx, w, h, idx);
+      break;
+  }
 }
 
 function drawOverlayAtCurrentTime(){
@@ -995,8 +1076,9 @@ function drawOverlayAtCurrentTime(){
   const idx = nearestFrameIndex(resultVideo.currentTime);
   const lm = frames[idx].lm;
   resultCtx.clearRect(0,0,resultCanvas.width,resultCanvas.height);
-  drawTelestration(resultCtx, lm, resultCanvas.width, resultCanvas.height);
+  drawTelestration(resultCtx, lm, idx, resultCanvas.width, resultCanvas.height);
 }
+
 
 window.addEventListener('resize', ()=>{
   if(resultVideo && resultCanvas) syncOverlayToVideo(resultVideo, resultCanvas);
