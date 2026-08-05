@@ -465,8 +465,11 @@ async function initModel(){
   const vision = await FilesetResolver.forVisionTasks(
     "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm"
   );
+  // GPU delegate first — it's meaningfully faster than CPU for this workload on
+  // most phones, which matters since processing has to finish inside a timeout.
+  // Falls back to CPU for devices/browsers where the GPU delegate isn't available.
   poseLandmarker = await PoseLandmarker.createFromOptions(vision, {
-    baseOptions:{ modelAssetPath: MODEL_URL, delegate:"CPU" },
+    baseOptions:{ modelAssetPath: MODEL_URL, delegate:"GPU" },
     runningMode:"VIDEO",
     numPoses:1
   });
@@ -474,13 +477,13 @@ async function initModel(){
   setTimeout(()=>statusLine.classList.add('hidden'), 800);
 }
 initModel().catch(async (e)=>{
-  console.error('CPU delegate failed, trying GPU', e);
+  console.error('GPU delegate failed, trying CPU', e);
   try{
     const vision = await FilesetResolver.forVisionTasks(
       "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14/wasm"
     );
     poseLandmarker = await PoseLandmarker.createFromOptions(vision, {
-      baseOptions:{ modelAssetPath: MODEL_URL, delegate:"GPU" },
+      baseOptions:{ modelAssetPath: MODEL_URL, delegate:"CPU" },
       runningMode:"VIDEO",
       numPoses:1
     });
@@ -548,71 +551,112 @@ async function startProcessing(url){
 
   const procCanvas = document.createElement('canvas');
   const procCtx = procCanvas.getContext('2d', { willReadFrequently: true });
-  const targetW = 400;
+  const targetW = 320;
   const scale = targetW / (proc.videoWidth || targetW);
   procCanvas.width = targetW;
   procCanvas.height = Math.round((proc.videoHeight || 270) * scale);
 
   const duration = proc.duration || 2;
-  const SAMPLE_COUNT = 22;
 
-  async function sampleAt(t, tsOffset){
-    const clampedT = Math.min(t, Math.max(duration - 0.05, 0));
-    await new Promise((res)=>{
-      const onSeeked = ()=>{ proc.removeEventListener('seeked', onSeeked); res(); };
-      proc.addEventListener('seeked', onSeeked, {once:true});
-      proc.currentTime = clampedT;
-      setTimeout(()=>{ proc.removeEventListener('seeked', onSeeked); res(); }, 1200);
+  // Primary path: play the clip through once at half speed and grab every
+  // presented frame via requestVideoFrameCallback. This avoids random-access
+  // seeking entirely — on mobile, each seek can force a decode back to the
+  // nearest keyframe, which is what was pushing processing past the timeout.
+  // Playing sequentially is both faster and naturally denser (every rendered
+  // frame we can keep up with, in order), so there's no separate coarse/refine
+  // pass needed here.
+  async function captureFramesByPlayback(){
+    await new Promise((resolve, reject)=>{
+      let settled = false;
+      function finish(){
+        if(settled) return;
+        settled = true;
+        proc.pause();
+        resolve();
+      }
+      proc.addEventListener('ended', finish, {once:true});
+
+      function onFrame(now, metadata){
+        if(settled) return;
+        const t = metadata.mediaTime;
+        try{
+          procCtx.drawImage(proc, 0, 0, procCanvas.width, procCanvas.height);
+          const result = poseLandmarker.detectForVideo(procCanvas, Math.round(t*1000));
+          if(result.landmarks && result.landmarks.length){
+            frames.push({ t, lm: result.landmarks[0] });
+          }
+        }catch(e){ /* skip this frame, keep going */ }
+        setStatus('Reading your swing…', Math.min(95, 10 + (t/duration)*85));
+        if(t >= duration - 0.03){ finish(); return; }
+        proc.requestVideoFrameCallback(onFrame);
+      }
+      proc.requestVideoFrameCallback(onFrame);
+      proc.playbackRate = 0.5;
+      proc.play().catch(reject);
     });
-    procCtx.drawImage(proc, 0, 0, procCanvas.width, procCanvas.height);
-    const ts = Math.round(clampedT*1000) + tsOffset;
-    const result = poseLandmarker.detectForVideo(procCanvas, ts);
-    if(result.landmarks && result.landmarks.length){
-      return { t: clampedT, lm: result.landmarks[0] };
-    }
-    return null;
   }
 
-  const sampleTimes = [];
-  for(let i=0;i<SAMPLE_COUNT;i++){
-    sampleTimes.push((duration * i) / (SAMPLE_COUNT - 1));
+  // Fallback for browsers without requestVideoFrameCallback (e.g. Firefox):
+  // the original two-phase seek-and-sample approach.
+  async function captureFramesBySeeking(){
+    const SAMPLE_COUNT = 22;
+    async function sampleAt(t, tsOffset){
+      const clampedT = Math.min(t, Math.max(duration - 0.05, 0));
+      await new Promise((res)=>{
+        const onSeeked = ()=>{ proc.removeEventListener('seeked', onSeeked); res(); };
+        proc.addEventListener('seeked', onSeeked, {once:true});
+        proc.currentTime = clampedT;
+        setTimeout(()=>{ proc.removeEventListener('seeked', onSeeked); res(); }, 1200);
+      });
+      procCtx.drawImage(proc, 0, 0, procCanvas.width, procCanvas.height);
+      const ts = Math.round(clampedT*1000) + tsOffset;
+      const result = poseLandmarker.detectForVideo(procCanvas, ts);
+      if(result.landmarks && result.landmarks.length){
+        return { t: clampedT, lm: result.landmarks[0] };
+      }
+      return null;
+    }
+
+    const sampleTimes = [];
+    for(let i=0;i<SAMPLE_COUNT;i++){
+      sampleTimes.push((duration * i) / (SAMPLE_COUNT - 1));
+    }
+    for(let i=0;i<sampleTimes.length;i++){
+      const f = await sampleAt(sampleTimes[i], i);
+      if(f) frames.push(f);
+      setStatus('Reading your swing…', Math.min(70, 10 + (i/sampleTimes.length)*60));
+      await new Promise(r=>setTimeout(r, 30));
+    }
+
+    if(frames.length >= 6){
+      frames.sort((a,b)=>a.t-b.t);
+      let bestI = 0, bestSpeed = -1;
+      for(let i=1;i<frames.length;i++){
+        const a = frames[i-1].lm, b = frames[i].lm;
+        const aw = { x:(a[15].x+a[16].x)/2, y:(a[15].y+a[16].y)/2 };
+        const bw = { x:(b[15].x+b[16].x)/2, y:(b[15].y+b[16].y)/2 };
+        const dt = frames[i].t - frames[i-1].t || 0.001;
+        const speed = Math.hypot(bw.x-aw.x, bw.y-aw.y)/dt;
+        if(speed > bestSpeed){ bestSpeed = speed; bestI = i; }
+      }
+      const windowStart = Math.max(0, frames[Math.max(bestI-2,0)].t);
+      const windowEnd = Math.min(duration, frames[Math.min(bestI+2,frames.length-1)].t);
+      const REFINE_COUNT = 14;
+      for(let i=0;i<REFINE_COUNT;i++){
+        const t = windowStart + ((windowEnd-windowStart) * i) / Math.max(REFINE_COUNT-1,1);
+        const f = await sampleAt(t, 1000+i);
+        if(f) frames.push(f);
+        setStatus('Refining impact…', Math.min(95, 70 + (i/REFINE_COUNT)*25));
+        await new Promise(r=>setTimeout(r, 30));
+      }
+    }
   }
 
   frames = [];
   try{
     await Promise.race([
-      (async ()=>{
-        for(let i=0;i<sampleTimes.length;i++){
-          const f = await sampleAt(sampleTimes[i], i);
-          if(f) frames.push(f);
-          setStatus('Reading your swing…', Math.min(70, 10 + (i/sampleTimes.length)*60));
-          await new Promise(r=>setTimeout(r, 30));
-        }
-
-        if(frames.length >= 6){
-          frames.sort((a,b)=>a.t-b.t);
-          let bestI = 0, bestSpeed = -1;
-          for(let i=1;i<frames.length;i++){
-            const a = frames[i-1].lm, b = frames[i].lm;
-            const aw = { x:(a[15].x+a[16].x)/2, y:(a[15].y+a[16].y)/2 };
-            const bw = { x:(b[15].x+b[16].x)/2, y:(b[15].y+b[16].y)/2 };
-            const dt = frames[i].t - frames[i-1].t || 0.001;
-            const speed = Math.hypot(bw.x-aw.x, bw.y-aw.y)/dt;
-            if(speed > bestSpeed){ bestSpeed = speed; bestI = i; }
-          }
-          const windowStart = Math.max(0, frames[Math.max(bestI-2,0)].t);
-          const windowEnd = Math.min(duration, frames[Math.min(bestI+2,frames.length-1)].t);
-          const REFINE_COUNT = 14;
-          for(let i=0;i<REFINE_COUNT;i++){
-            const t = windowStart + ((windowEnd-windowStart) * i) / Math.max(REFINE_COUNT-1,1);
-            const f = await sampleAt(t, 1000+i);
-            if(f) frames.push(f);
-            setStatus('Refining impact…', Math.min(95, 70 + (i/REFINE_COUNT)*25));
-            await new Promise(r=>setTimeout(r, 30));
-          }
-        }
-      })(),
-      new Promise((_,rej)=>setTimeout(()=>rej(new Error('processing timed out')), 60000))
+      ('requestVideoFrameCallback' in proc) ? captureFramesByPlayback() : captureFramesBySeeking(),
+      new Promise((_,rej)=>setTimeout(()=>rej(new Error('processing timed out')), 75000))
     ]);
   }catch(err){
     setStatus('Processing took too long and timed out. Try a shorter clip.', 0);
