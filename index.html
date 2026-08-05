@@ -554,7 +554,7 @@ async function startProcessing(url){
   procCanvas.height = Math.round((proc.videoHeight || 270) * scale);
 
   const duration = proc.duration || 2;
-  const SAMPLE_COUNT = 28;
+  const SAMPLE_COUNT = 22;
 
   async function sampleAt(t, tsOffset){
     const clampedT = Math.min(t, Math.max(duration - 0.05, 0));
@@ -562,7 +562,7 @@ async function startProcessing(url){
       const onSeeked = ()=>{ proc.removeEventListener('seeked', onSeeked); res(); };
       proc.addEventListener('seeked', onSeeked, {once:true});
       proc.currentTime = clampedT;
-      setTimeout(()=>{ proc.removeEventListener('seeked', onSeeked); res(); }, 2000);
+      setTimeout(()=>{ proc.removeEventListener('seeked', onSeeked); res(); }, 1200);
     });
     procCtx.drawImage(proc, 0, 0, procCanvas.width, procCanvas.height);
     const ts = Math.round(clampedT*1000) + tsOffset;
@@ -586,7 +586,7 @@ async function startProcessing(url){
           const f = await sampleAt(sampleTimes[i], i);
           if(f) frames.push(f);
           setStatus('Reading your swing…', Math.min(70, 10 + (i/sampleTimes.length)*60));
-          await new Promise(r=>setTimeout(r, 60));
+          await new Promise(r=>setTimeout(r, 30));
         }
 
         if(frames.length >= 6){
@@ -602,13 +602,13 @@ async function startProcessing(url){
           }
           const windowStart = Math.max(0, frames[Math.max(bestI-2,0)].t);
           const windowEnd = Math.min(duration, frames[Math.min(bestI+2,frames.length-1)].t);
-          const REFINE_COUNT = 20;
+          const REFINE_COUNT = 14;
           for(let i=0;i<REFINE_COUNT;i++){
             const t = windowStart + ((windowEnd-windowStart) * i) / Math.max(REFINE_COUNT-1,1);
             const f = await sampleAt(t, 1000+i);
             if(f) frames.push(f);
             setStatus('Refining impact…', Math.min(95, 70 + (i/REFINE_COUNT)*25));
-            await new Promise(r=>setTimeout(r, 60));
+            await new Promise(r=>setTimeout(r, 30));
           }
         }
       })(),
