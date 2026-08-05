@@ -804,7 +804,7 @@ function renderMetrics(){
     {
       label:'Hip-Shoulder Separation',
       value: `${c.separation.toFixed(0)}°`,
-      read: `Shoulders turned ~${c.shoulderTurn.toFixed(0)}° vs hips ~${c.hipTurn.toFixed(0)}° to the top. ${qualRead(Math.abs(c.separation-35),15,30)} — estimated from one camera angle.`
+      read: `Shoulders turned ~${c.shoulderTurn.toFixed(0)}° vs hips ~${c.hipTurn.toFixed(0)}° to the top, for an estimated X-factor of ${c.separation.toFixed(0)}°. Tour average X-factor runs close to 42-45°. ${qualRead(Math.abs(c.separation-43),15,25)} — estimated from one camera angle.`
     },
     {
       label:'Head Movement',
@@ -880,11 +880,11 @@ function getFaultCatalog(c){
     {
       key:'separation',
       label:'Hip-Shoulder Separation',
-      severity: Math.max(0, Math.abs(c.separation-30)-10)/30,
-      diagnose: `Shoulders turned about ${c.shoulderTurn.toFixed(0)}° against hips at ${c.hipTurn.toFixed(0)}° to the top, roughly ${c.separation.toFixed(0)}° of separation. ${c.separation<20 ? "That's a tight, connected turn — comfortable, but likely leaving power on the table." : "That's a wide gap for one camera angle to estimate reliably, and can point to the hips sliding rather than truly turning."}`,
+      severity: Math.max(0, Math.abs(c.separation-43)-12)/35,
+      diagnose: `Shoulders turned about ${c.shoulderTurn.toFixed(0)}° against hips at ${c.hipTurn.toFixed(0)}° to the top, roughly ${c.separation.toFixed(0)}° of separation (tour average X-factor runs close to 42-45°). ${c.separation<28 ? "That's a tight, connected turn — comfortable, but likely leaving power on the table." : c.separation>60 ? "That's a wide gap for one camera angle to estimate reliably, and can point to the hips sliding rather than truly turning." : "That's in a solid working range."}`,
       why:`Separation between hips and shoulders is where a swing generates its coil. Too little and there's no engine behind it; too much (especially from sliding rather than turning) makes the downswing timing unpredictable.`,
-      drillName: c.separation<20 ? 'The Resistance Turn Drill' : 'The Quiet Hips Drill',
-      drill: c.separation<20
+      drillName: c.separation<28 ? 'The Resistance Turn Drill' : 'The Quiet Hips Drill',
+      drill: c.separation<28
         ? `Take your normal stance, then make backswings while feeling your hips resist turning as long as possible while the shoulders keep going. A few reps of this exaggeration, then blend it back to a normal swing.`
         : `Make slow-motion backswings focusing on turning your hips less than feels natural, letting the shoulders do the work of building tension against them, rather than letting the whole lower body slide.`,
       trainingAids:{
