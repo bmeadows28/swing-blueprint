@@ -76,6 +76,7 @@
     margin-bottom:18px;
   }
   .upload-zone{
+    display:block;
     position:relative;
     border:2px solid var(--gold);
     border-radius:var(--radius);
@@ -259,7 +260,6 @@
     font-size:1rem;
     line-height:1.7;
     color:var(--ink);
-    white-space:pre-line;
   }
   .flag-box{
     background:#FBF3E9;
@@ -271,6 +271,85 @@
     margin-top:14px;
   }
   .flag-box b{color:var(--navy);}
+  .blueprint-section{
+    margin-bottom:22px;
+    padding-bottom:20px;
+    border-bottom:1px solid var(--cream-2);
+  }
+  .blueprint-section:last-of-type{
+    border-bottom:none;
+    margin-bottom:8px;
+    padding-bottom:0;
+  }
+  .blueprint-section h3{
+    font-size:1.05rem;
+    margin-bottom:8px;
+  }
+  .blueprint-section p{
+    margin:0 0 8px;
+  }
+  .blueprint-section.focus{
+    background:#FBF3E9;
+    border:1px solid var(--gold);
+    border-radius:10px;
+    padding:16px 18px;
+    border-bottom:1px solid var(--gold);
+  }
+  .blueprint-section.closing{
+    font-style:italic;
+    color:var(--navy-2);
+  }
+  .aid-list{
+    margin:0 0 6px;
+    padding-left:20px;
+  }
+  .aid-list li{ margin-bottom:4px; }
+  .video-card{
+    display:flex;
+    gap:14px;
+    align-items:center;
+    text-decoration:none;
+    background:var(--cream);
+    border:1px solid var(--cream-2);
+    border-radius:10px;
+    padding:10px;
+    transition:background 0.15s;
+  }
+  .video-card:hover{ background:var(--cream-2); }
+  .video-card img{
+    width:120px;
+    height:68px;
+    object-fit:cover;
+    border-radius:6px;
+    flex-shrink:0;
+  }
+  .video-card .video-meta{ min-width:0; }
+  .video-card .video-title{
+    font-weight:600;
+    color:var(--navy);
+    font-size:0.92rem;
+    display:block;
+  }
+  .video-card .video-channel{
+    font-size:0.8rem;
+    color:var(--muted);
+  }
+  .video-note{
+    font-size:0.78rem;
+    color:var(--muted);
+    margin-top:6px;
+  }
+  .blueprint-actions{
+    display:flex;
+    gap:10px;
+    margin-top:6px;
+    flex-wrap:wrap;
+    align-items:center;
+  }
+  .share-note{
+    font-size:0.82rem;
+    color:var(--muted);
+  }
   .hidden{display:none !important;}
   footer{
     text-align:center;
@@ -329,13 +408,17 @@
     <div class="sub">Estimated from a single camera angle — most accurate when filmed face-on or down-the-line at roughly hip height.</div>
     <div class="metrics-grid" id="metricsGrid"></div>
     <div class="flag-box">
-      <b>Not measured here:</b> grip pressure (needs a sensor in the glove/grip — no video can capture this), and true club path / face angle in degrees (that needs radar or camera tracking of the actual clubhead, which is what your TrackMan, Foresight, or FlightScope does — once device sync is live, that data will layer in alongside this). What's shown below is your hand-path as a visual proxy for swing direction, not a lab measurement.
+      <b>Not measured here:</b> grip pressure (needs a sensor in the glove/grip — no video can capture this), and true club path / face angle or club rotation in degrees (that needs radar or camera tracking of the actual clubhead, which is what your TrackMan, Foresight, or FlightScope does — once device sync is live, that data will layer in alongside this). The "Swing Plane" reading below is estimated from your hand path, not the clubhead — a proxy for swing direction, not a lab measurement.
     </div>
   </div>
 
   <div class="card hidden" id="blueprintCard">
-    <h2>Your Blueprint</h2>
+    <h2>Visual Analysis Summary &amp; Lesson Plan</h2>
     <div class="blueprint-text" id="blueprintText"></div>
+    <div class="blueprint-actions hidden" id="blueprintActions">
+      <button class="btn gold small" id="shareBtn">Share These Results</button>
+      <span class="share-note hidden" id="shareNote"></span>
+    </div>
   </div>
 
 
@@ -350,7 +433,7 @@ const MODEL_URL = "https://storage.googleapis.com/mediapipe-models/pose_landmark
 
 const L = {
   nose:0, lShoulder:11, rShoulder:12, lElbow:13, rElbow:14,
-  lWrist:15, rWrist:16, lHip:23, rHip:24, lAnkle:27, rAnkle:28
+  lWrist:15, rWrist:16, lHip:23, rHip:24, lKnee:25, rKnee:26, lAnkle:27, rAnkle:28
 };
 
 let poseLandmarker = null;
@@ -471,7 +554,7 @@ async function startProcessing(url){
   procCanvas.height = Math.round((proc.videoHeight || 270) * scale);
 
   const duration = proc.duration || 2;
-  const SAMPLE_COUNT = 22;
+  const SAMPLE_COUNT = 28;
 
   async function sampleAt(t, tsOffset){
     const clampedT = Math.min(t, Math.max(duration - 0.05, 0));
@@ -517,9 +600,9 @@ async function startProcessing(url){
             const speed = Math.hypot(bw.x-aw.x, bw.y-aw.y)/dt;
             if(speed > bestSpeed){ bestSpeed = speed; bestI = i; }
           }
-          const windowStart = Math.max(0, frames[Math.max(bestI-1,0)].t);
-          const windowEnd = Math.min(duration, frames[Math.min(bestI+1,frames.length-1)].t);
-          const REFINE_COUNT = 12;
+          const windowStart = Math.max(0, frames[Math.max(bestI-2,0)].t);
+          const windowEnd = Math.min(duration, frames[Math.min(bestI+2,frames.length-1)].t);
+          const REFINE_COUNT = 20;
           for(let i=0;i<REFINE_COUNT;i++){
             const t = windowStart + ((windowEnd-windowStart) * i) / Math.max(REFINE_COUNT-1,1);
             const f = await sampleAt(t, 1000+i);
@@ -547,16 +630,6 @@ async function startProcessing(url){
   setStatus('Detecting key positions…', 96);
   detectKeyframes();
   buildMetrics();
-  function getCausalNote(primary, runnerUp){
-  if(!runnerUp) return null;
-  const links = {
-    'separation->headspine': `Worth noting: limited hip-shoulder separation often shows up downstream as head or spine movement — the body compensates for a lack of coil by sliding instead of turning.`,
-    'separation->release': `Worth noting: tight separation can also rush the downswing, which is a common cause of an early release.`,
-    'headspine->release': `Worth noting: head and spine movement through impact often forces late hand compensations, which can look like an early or held-off release.`,
-    'tempo->separation': `Worth noting: rushed tempo often prevents the hips and shoulders from separating properly in transition.`
-  };
-  return links[`${primary.key}->${runnerUp.key}`] || null;
-}
   buildBlueprint();
   setupResultVideo(url);
 
@@ -577,20 +650,42 @@ function detectKeyframes(){
   frames.sort((a,b)=>a.t-b.t);
   const n = frames.length;
   const wy = frames.map(f=>wristPt(f.lm).y);
+
+  // Use a time-based cutoff (not an index-based one) for the "top" search window —
+  // the refine pass packs extra samples into the transition/impact window, so a
+  // fixed fraction of the frame COUNT no longer lines up with a fixed fraction of
+  // the clip's DURATION once coarse and refined samples are merged.
+  const totalT = (frames[n-1].t - frames[0].t) || 1;
+  const topCutoffT = frames[0].t + totalT*0.75;
   let topI = 0, topVal = Infinity;
-  for(let i=0;i<Math.floor(n*0.75);i++){
+  for(let i=0;i<n && frames[i].t<=topCutoffT;i++){
     if(wy[i] < topVal){ topVal = wy[i]; topI = i; }
   }
+
   let speeds = [0];
   for(let i=1;i<n;i++){
     const a = wristPt(frames[i-1].lm), b = wristPt(frames[i].lm);
     const dt = frames[i].t - frames[i-1].t || 0.001;
     speeds.push(Math.hypot(b.x-a.x,b.y-a.y)/dt);
   }
-  let impactI = topI, impactVal = -1;
-  for(let i=topI;i<n;i++){
-    if(speeds[i] > impactVal){ impactVal = speeds[i]; impactI = i; }
+
+  // Impact: picking the single fastest interval tends to land on its END, which —
+  // with sparse sampling — is often already deceleration into the follow-through
+  // (hands back up near hip height) rather than the ball. Instead, score frames
+  // after the top by how fast the hands are moving AND how close their height is
+  // back to address (roughly ball height), since impact is where both are true
+  // at once.
+  const addressY = wy[0];
+  let maxSpeedAfterTop = 0;
+  for(let i=topI+1;i<n;i++) maxSpeedAfterTop = Math.max(maxSpeedAfterTop, speeds[i]);
+  let impactI = Math.min(topI+1, n-1), bestScore = -Infinity;
+  for(let i=topI+1;i<n;i++){
+    const speedNorm = maxSpeedAfterTop>0 ? speeds[i]/maxSpeedAfterTop : 0;
+    const heightDiff = Math.abs(wy[i]-addressY);
+    const score = speedNorm - heightDiff*3;
+    if(score > bestScore){ bestScore = score; impactI = i; }
   }
+
   const addressI = 0;
   const finishI = n-1;
   keyIdx = { address:addressI, top:Math.max(topI,1), impact:Math.max(impactI,topI+1), finish:finishI };
@@ -634,6 +729,27 @@ function buildMetrics(){
   const stanceWidth = dist(fA[L.lAnkle], fA[L.rAnkle]);
   const stanceRatio = stanceWidth / (shoulderWidthA||1);
 
+  const hipMidA = mid(fA[L.lHip], fA[L.rHip]);
+  const hipMidT = mid(fT[L.lHip], fT[L.rHip]);
+  const hipSway = Math.abs(hipMidT.x - hipMidA.x) / (stanceWidth||1);
+
+  function kneeAngle(f, side){
+    const hip = f[side==='l'?L.lHip:L.rHip];
+    const knee = f[side==='l'?L.lKnee:L.rKnee];
+    const ankle = f[side==='l'?L.lAnkle:L.rAnkle];
+    const a1 = angleDeg(knee, hip), a2 = angleDeg(knee, ankle);
+    return Math.abs(a1-a2);
+  }
+  const kneeFlexA = (kneeAngle(fA,'l') + kneeAngle(fA,'r')) / 2;
+  const kneeFlexI = (kneeAngle(fI,'l') + kneeAngle(fI,'r')) / 2;
+  const earlyExtension = kneeFlexI - kneeFlexA;
+
+  function angleFromVerticalDeg(p1,p2){
+    const dx = Math.abs(p2.x-p1.x), dy = Math.abs(p2.y-p1.y);
+    return Math.atan2(dx, dy) * 180/Math.PI;
+  }
+  const swingPlaneAngle = angleFromVerticalDeg(wristPt(fA), wristPt(fT));
+
   const midAfterI = frames[Math.min(keyIdx.impact + Math.round((keyIdx.finish-keyIdx.impact)*0.25), keyIdx.finish)].lm;
   function elbowAngle(f, side){
     const sh = f[side==='l'?L.lShoulder:L.rShoulder];
@@ -653,7 +769,8 @@ function buildMetrics(){
   computed = {
     tempoRatio, backT, downT, separation, shoulderTurn, hipTurn,
     headDrift, spineChange, stanceRatio,
-    releaseDelta, throughRotation
+    releaseDelta, throughRotation,
+    hipSway, earlyExtension, swingPlaneAngle
   };
 
   renderMetrics();
@@ -673,6 +790,16 @@ function renderMetrics(){
       label:'Tempo (back : down)',
       value: `${c.tempoRatio.toFixed(1)} : 1`,
       read: `Tour average runs close to 3:1. ${c.tempoRatio>3.6?'Yours is on the slower/longer backswing side.': c.tempoRatio<2.4?'Yours is quick into transition.':'Yours sits close to that range.'}`
+    },
+    {
+      label:'Shoulder Rotation',
+      value: `${c.shoulderTurn.toFixed(0)}°`,
+      read: `Tour average shoulder turn to the top runs close to 90-100°. ${c.shoulderTurn<80?'Yours is on the shorter side — may be limiting how much coil you build.':c.shoulderTurn>110?'Yours is a long turn — check that it stays controlled and doesn\'t tip the spine angle.':'Yours sits in a common working range.'}`
+    },
+    {
+      label:'Hip Rotation',
+      value: `${c.hipTurn.toFixed(0)}°`,
+      read: `Tour average hip turn to the top runs close to 45-50°. ${c.hipTurn<35?'Yours is fairly restricted — often tied to limited hip mobility.':c.hipTurn>60?'Yours is turning a lot — worth checking whether that\'s a true turn or a slide (see Lower Body Sway below).':'Yours sits in a common working range.'}`
     },
     {
       label:'Hip-Shoulder Separation',
@@ -703,6 +830,21 @@ function renderMetrics(){
       label:'Follow-Through Rotation',
       value: `${c.throughRotation.toFixed(0)}°`,
       read: c.throughRotation>25 ? 'Full rotation into the finish.' : 'Rotation into the finish looks abbreviated — check if the swing is being cut off.'
+    },
+    {
+      label:'Lower Body Sway',
+      value: `${(c.hipSway*100).toFixed(0)}% of stance width`,
+      read: c.hipSway<0.15 ? 'Hips are turning in place rather than sliding — solid, stable base.' : c.hipSway<0.3 ? 'Some lateral hip slide address to top — common, and usually worth tightening up.' : 'Significant lateral hip slide — a classic sign of swaying rather than turning, which costs both power and consistency.'
+    },
+    {
+      label:'Lower Body Stability (Early Extension)',
+      value: `${c.earlyExtension>=0?'+':''}${c.earlyExtension.toFixed(0)}°`,
+      read: c.earlyExtension<8 ? 'Knee flex held well from address to impact — good posture through the ball.' : 'Legs are straightening noticeably from address to impact — a common sign of standing up out of posture ("early extension"), which pushes the hips toward the ball and often causes thin or blocked shots.'
+    },
+    {
+      label:'Swing Plane (hand-path estimate)',
+      value: `${c.swingPlaneAngle.toFixed(0)}° from vertical`,
+      read: `Hand path from address to the top, estimated from this one camera angle — not the actual clubhead. ${c.swingPlaneAngle<35?'A steeper, more upright path.':c.swingPlaneAngle>55?'A flatter, rounder path.':'A fairly neutral path.'} Neither is automatically right or wrong — it should match the rest of your swing and the angle you filmed from.`
     }
   ];
   grid.innerHTML = items.map(it=>`
@@ -728,7 +870,12 @@ function getFaultCatalog(c){
       diagnose: `Your tempo ratio is ${c.tempoRatio.toFixed(1)}:1, backswing to downswing, against a tour-average close to 3:1. ${c.tempoRatio>3 ? "Your transition is on the slow, long side relative to your backswing." : "Your downswing is quick relative to your backswing — a common cause of rushed, handsy contact."}`,
       why:`Tempo comes first because everything downstream, sequencing, separation, release, is built on top of a repeatable rhythm. It's the foundation the rest of the swing sits on.`,
       drillName:'The 3-Count Drill',
-      drill:`Count "one" smoothly to the top of your backswing, then "two-three" down through impact, out loud, on ten slow rehearsal swings. Then carry that same count into five real swings.`
+      drill:`Count "one" smoothly to the top of your backswing, then "two-three" down through impact, out loud, on ten slow rehearsal swings. Then carry that same count into five real swings.`,
+      trainingAids:{
+        free:'Count "1...2-3" out loud on every practice swing until it feels automatic — no equipment needed.',
+        purchase:'A clip-on golf tempo trainer / metronome (sets an audible beat for backswing and downswing).'
+      },
+      video:{ id:'uLXOF4wDmMk', title:'Start Your Swing Like This For Better Tempo', channel:'Michael Breed' }
     },
     {
       key:'separation',
@@ -739,7 +886,12 @@ function getFaultCatalog(c){
       drillName: c.separation<20 ? 'The Resistance Turn Drill' : 'The Quiet Hips Drill',
       drill: c.separation<20
         ? `Take your normal stance, then make backswings while feeling your hips resist turning as long as possible while the shoulders keep going. A few reps of this exaggeration, then blend it back to a normal swing.`
-        : `Make slow-motion backswings focusing on turning your hips less than feels natural, letting the shoulders do the work of building tension against them, rather than letting the whole lower body slide.`
+        : `Make slow-motion backswings focusing on turning your hips less than feels natural, letting the shoulders do the work of building tension against them, rather than letting the whole lower body slide.`,
+      trainingAids:{
+        free:'Cross a golf club or alignment stick behind your shoulders and make slow turns, feeling the hips resist while the shoulders keep rotating against them.',
+        purchase:'A resistance band anchored at hip height, or an alignment-stick "separation" trainer.'
+      },
+      video:{ id:'rBhSxSyVZtY', title:'Increase Hip & Shoulder Separation (X-Factor) in The Golf Swing', channel:'PowerCore360' }
     },
     {
       key:'headspine',
@@ -748,7 +900,12 @@ function getFaultCatalog(c){
       diagnose: `Head moved about ${(c.headDrift*100).toFixed(0)}% of shoulder width from address to impact, and spine angle changed about ${c.spineChange.toFixed(0)}°. Movement here is often the root cause of inconsistent strike, since everything downstream, path, low point, face, is built off where the body's center stays through impact.`,
       why:`A moving center is the single most common source of fat and thin shots. Nothing else about the swing matters much if the low point of contact is inconsistent for this reason.`,
       drillName:'The Headcover Drill',
-      drill:`Tuck a headcover or small towel lightly under your chin at address. Make slow swings without letting it drop — it'll fall immediately if the head or spine angle moves too much. Build up to full-speed swings once you can hold it through five slow reps.`
+      drill:`Tuck a headcover or small towel lightly under your chin at address. Make slow swings without letting it drop — it'll fall immediately if the head or spine angle moves too much. Build up to full-speed swings once you can hold it through five slow reps.`,
+      trainingAids:{
+        free:'The headcover-under-chin drill above, or swing next to a wall/mirror so you can see any head drift immediately.',
+        purchase:'A swing-plane and posture trainer that uses an alignment rod or laser to flag head and spine movement.'
+      },
+      video:{ id:'MgxSoAW7vzw', title:'Keep Your Head Behind The Ball With The Driver', channel:'Me And My Golf' }
     },
     {
       key:'release',
@@ -757,7 +914,12 @@ function getFaultCatalog(c){
       diagnose: `Lead arm extension changed ${c.releaseDelta.toFixed(0)}° just after impact. That's limited extension, which often points to an early flip or a hold-off through the ball rather than a full release.`,
       why:`How the arms extend right after impact determines whether the clubface is still turning over (adding curve and inconsistency) or has already released cleanly. This is usually a timing issue tied to the transition, not a strength issue.`,
       drillName:'The Towel Drill',
-      drill:`Tuck a small towel under both armpits at address and make half-swings without letting either end drop, focusing on both arms extending fully toward the target through impact before folding into the finish.`
+      drill:`Tuck a small towel under both armpits at address and make half-swings without letting either end drop, focusing on both arms extending fully toward the target through impact before folding into the finish.`,
+      trainingAids:{
+        free:'The towel-under-both-arms drill above, using any bath towel.',
+        purchase:'An impact bag (great feedback for extension and a square release through the hitting zone).'
+      },
+      video:{ id:'tnsDa2WSRZM', title:'A Simple Drill To Practice Your Release', channel:'Golf Channel' }
     },
     {
       key:'finish',
@@ -766,9 +928,56 @@ function getFaultCatalog(c){
       diagnose: `Shoulders kept turning about ${c.throughRotation.toFixed(0)}° past impact into the finish. That rotation looks abbreviated — a common sign the swing is being cut off rather than finished.`,
       why:`A full, balanced finish is usually the result of a swing that was committed all the way through, not a cosmetic add-on. Golfers who stop early at impact are almost always decelerating into the ball, not through it.`,
       drillName:'The Balance Finish Drill',
-      drill:`After every practice swing, hold your finish position for a full three-second count before relaxing. If you can't hold it in balance, that's the signal the swing needs to commit further through impact, not just at it.`
+      drill:`After every practice swing, hold your finish position for a full three-second count before relaxing. If you can't hold it in balance, that's the signal the swing needs to commit further through impact, not just at it.`,
+      trainingAids:{
+        free:'The hold-your-finish-for-3-seconds drill above — no equipment needed, just commit to the hold every rep.',
+        purchase:'A balance/stability trainer (a wobble board or foam balance pad to practice finishing in balance).'
+      },
+      video:{ id:'o0ODiWeU-X0', title:'The Best Follow Through Drill You Can Do', channel:'Free Online Golf Tips' }
+    },
+    {
+      key:'hipSway',
+      label:'Lower Body Sway',
+      severity: Math.max(c.hipSway-0.15, 0)/0.15,
+      diagnose: `Hips slid about ${(c.hipSway*100).toFixed(0)}% of your stance width from address to the top, rather than staying centered and turning in place. ${c.hipSway>0.3?"That's a lot of lateral movement — a classic sway rather than a turn.":"That's a mild slide, common for a lot of golfers, but worth tightening up."}`,
+      why:`A hip sway moves your swing center off the ball instead of coiling around it, which forces late compensations just to get back to the ball at impact — it undercuts power and strike consistency at the same time.`,
+      drillName:'The Trail-Foot Wall Drill',
+      drill:`Set up with your trail hip lightly touching a wall, headcover, or golf bag. Make backswings that turn your hips without losing contact with it — that's the feeling of turning in place instead of sliding.`,
+      trainingAids:{
+        free:'The trail-foot wall drill above, using any wall, golf bag, or chair.',
+        purchase:'An alignment stick planted just outside your trail hip as a physical sway barrier.'
+      },
+      video:{ id:'6dN5cj_AB8I', title:'Hip Sway = Consistency Killer... Simple 1 Drill Fix', channel:'Free Online Golf Tips' }
+    },
+    {
+      key:'earlyExtension',
+      label:'Lower Body Stability (Early Extension)',
+      severity: Math.max(c.earlyExtension-8, 0)/12,
+      diagnose: `Your knee flex changed about ${c.earlyExtension.toFixed(0)}° from address to impact — the legs are straightening and standing up out of posture through the hitting zone rather than holding their bend.`,
+      why:`Early extension pushes your hips toward the ball, which crowds the arms and forces the club, and hands, to compensate in the last split second before impact. It's one of the most common causes of thin, blocked, or inconsistent shots in amateur golf.`,
+      drillName:'The Chair Drill',
+      drill:`Set up with a chair, bench, or golf bag lightly touching your rear end at address. Make slow-motion swings keeping that light contact all the way to impact — if you lose contact early, that's the standing-up move happening.`,
+      trainingAids:{
+        free:'The chair drill above, using any chair, bench, or golf bag behind you.',
+        purchase:'A hip-hinge / posture trainer designed specifically for early extension.'
+      },
+      video:{ id:'dVMCgqr82zk', title:'3 Drills To Fix Early Extension In Your Golf Swing', channel:'Free Online Golf Tips' }
     }
   ];
+}
+
+function getCausalNote(primary, runnerUp){
+  if(!runnerUp) return null;
+  const links = {
+    'separation->headspine': `Worth noting: limited hip-shoulder separation often shows up downstream as head or spine movement — the body compensates for a lack of coil by sliding instead of turning.`,
+    'separation->release': `Worth noting: tight separation can also rush the downswing, which is a common cause of an early release.`,
+    'headspine->release': `Worth noting: head and spine movement through impact often forces late hand compensations, which can look like an early or held-off release.`,
+    'tempo->separation': `Worth noting: rushed tempo often prevents the hips and shoulders from separating properly in transition.`,
+    'hipSway->headspine': `Worth noting: a hip sway often drags the head and spine off the ball right along with it — they tend to travel together.`,
+    'earlyExtension->release': `Worth noting: standing up out of posture is a common cause of an early or flipped release — the body straightens to make room it lost by extending early.`,
+    'hipSway->separation': `Worth noting: sliding instead of turning in the backswing is a common reason hip-shoulder separation falls short.`
+  };
+  return links[`${primary.key}->${runnerUp.key}`] || null;
 }
 
 let sessionHistory = [];
@@ -784,20 +993,30 @@ function saveHistorySession(entry){
 }
 
 let primaryFault = null;
+let lastReportText = '';
+
+function esc(s){
+  const d = document.createElement('div');
+  d.textContent = s;
+  return d.innerHTML;
+}
 
 function buildBlueprint(){
   const c = computed;
-  const lines = [];
+  const blueprintEl = document.getElementById('blueprintText');
+  const actionsEl = document.getElementById('blueprintActions');
 
   const implausible = c.headDrift>1.0 || c.stanceRatio>2.2 || c.stanceRatio<0.4 ||
                        c.tempoRatio>7 || c.tempoRatio<0.7 || Math.abs(c.spineChange)>60;
   if(implausible){
-    lines.push(`These numbers look off, and that's worth flagging rather than presenting as real advice.`);
-    lines.push('');
-    lines.push(`This almost always means the clip had extra footage before or after the actual swing (standing around, walking, camera settling), or was recorded in slow motion — both throw off automatic position detection since it assumes frame one is address and the fastest motion in the clip is impact.`);
-    lines.push('');
-    lines.push(`Trim to just the swing at normal speed, 2-6 seconds, and re-upload before treating anything below as real guidance.`);
-    document.getElementById('blueprintText').textContent = lines.join('\n');
+    blueprintEl.innerHTML = `
+      <div class="blueprint-section">
+        <h3>These numbers look off</h3>
+        <p>That's worth flagging rather than presenting as real advice.</p>
+        <p>This almost always means the clip had extra footage before or after the actual swing (standing around, walking, camera settling), or was recorded in slow motion — both throw off automatic position detection since it assumes frame one is address and the fastest motion in the clip is impact.</p>
+        <p>Trim to just the swing at normal speed, 2-6 seconds, and re-upload before treating anything below as real guidance.</p>
+      </div>`;
+    actionsEl.classList.add('hidden');
     primaryFault = null;
     narrationSegments = [];
     return;
@@ -810,48 +1029,106 @@ function buildBlueprint(){
   const runnerUp = catalog[1];
 
   const last = sessionHistory.length ? sessionHistory[sessionHistory.length-1] : null;
-
-  lines.push(`YOUR FOCUS FOR THIS SESSION: ${primaryFault.label}`);
-  lines.push('');
+  let progressNote;
   if(last && last.key===primaryFault.key){
     const improved = primaryFault.severity < last.severity - 0.03;
-    lines.push(improved
-      ? `You worked on this same thing last time, and it's moved in the right direction. Keep going with it rather than switching focus yet.`
-      : `This is the same focus as last session. That's normal — most swing changes take more than one rep to stick. Stay on this before adding anything else.`);
-    lines.push('');
+    progressNote = improved
+      ? `You worked on this same thing last time, and it's moved in the right direction — keep going with it rather than switching focus yet.`
+      : `This is the same focus as last session. That's normal — most swing changes take more than one rep to stick. Stay on this before adding anything else.`;
   } else if(last){
     const lastFaultNow = catalog.find(f=>f.key===last.key);
-    if(lastFaultNow && lastFaultNow.severity < 0.15){
-      lines.push(`Good news on last session's focus (${last.label}) — that's cleaned up. Moving on to the next priority.`);
-    } else {
-      lines.push(`Last session's focus was ${last.label}. That's not fully resolved yet, but today's clip is flagging ${primaryFault.label} as the more urgent issue right now — worth keeping both in mind.`);
-    }
-    lines.push('');
+    progressNote = (lastFaultNow && lastFaultNow.severity < 0.15)
+      ? `Good news on last session's focus (${last.label}) — that's cleaned up. Moving on to the next priority.`
+      : `Last session's focus was ${last.label}. That's not fully resolved yet, but today's clip is flagging ${primaryFault.label} as the more urgent issue right now — worth keeping both in mind.`;
   } else {
-    lines.push(`This is your first upload, so here's where to start.`);
-    lines.push('');
+    progressNote = `This is your first upload, so here's where to start.`;
   }
 
-  lines.push(primaryFault.diagnose);
-  lines.push('');
-  lines.push(`Why this first: ${primaryFault.why}`);
-  lines.push('');
-  lines.push(`Drill: ${primaryFault.drillName} — ${primaryFault.drill}`);
-  lines.push('');
-    if(runnerUp && runnerUp.severity>0.1){
-    lines.push(`On deck once this settles: ${runnerUp.label}. Not today's focus, but worth knowing it's next in line.`);
+  const summaryLine = `Tempo ran ${c.tempoRatio.toFixed(1)}:1 (back:down), hip-shoulder separation was about ${c.separation.toFixed(0)}°, head moved ${(c.headDrift*100).toFixed(0)}% of shoulder width from address to impact, and knee flex changed ${c.earlyExtension.toFixed(0)}° through the hitting zone.`;
+
+  let onDeckHtml = '';
+  if(runnerUp && runnerUp.severity>0.1){
     const causal = getCausalNote(primaryFault, runnerUp);
-    if(causal){ lines.push(causal); }
-    lines.push('');
+    onDeckHtml = `
+      <div class="blueprint-section">
+        <h3>On Deck</h3>
+        <p>Once ${esc(primaryFault.label)} settles, ${esc(runnerUp.label)} is next in line — not today's focus, but worth knowing about.${causal?` ${esc(causal)}`:''}</p>
+      </div>`;
   }
-  lines.push(`Re-upload after a few practice sessions on this one thing — the read will pick up whether it's moved before suggesting anything new.`);
 
-  document.getElementById('blueprintText').textContent = lines.join('\n');
+  blueprintEl.innerHTML = `
+    <div class="blueprint-section">
+      <h3>Session Summary</h3>
+      <p>${esc(summaryLine)}</p>
+      <p>${esc(progressNote)}</p>
+    </div>
+    <div class="blueprint-section">
+      <h3>What We Observed</h3>
+      <p>${esc(primaryFault.diagnose)}</p>
+    </div>
+    <div class="blueprint-section focus">
+      <h3>Start Here: ${esc(primaryFault.label)}</h3>
+      <p>${esc(primaryFault.why)}</p>
+    </div>
+    <div class="blueprint-section">
+      <h3>Your Drill: ${esc(primaryFault.drillName)}</h3>
+      <p>${esc(primaryFault.drill)}</p>
+    </div>
+    <div class="blueprint-section">
+      <h3>Training Aids</h3>
+      <ul class="aid-list">
+        <li><b>Free:</b> ${esc(primaryFault.trainingAids.free)}</li>
+        <li><b>Worth buying:</b> ${esc(primaryFault.trainingAids.purchase)}</li>
+      </ul>
+    </div>
+    <div class="blueprint-section">
+      <h3>Watch &amp; Learn (Free)</h3>
+      <a class="video-card" href="https://www.youtube.com/watch?v=${primaryFault.video.id}" target="_blank" rel="noopener">
+        <img src="https://img.youtube.com/vi/${primaryFault.video.id}/hqdefault.jpg" alt="${esc(primaryFault.video.title)} thumbnail" loading="lazy">
+        <span class="video-meta">
+          <span class="video-title">${esc(primaryFault.video.title)}</span>
+          <span class="video-channel">${esc(primaryFault.video.channel)} — free on YouTube</span>
+        </span>
+      </a>
+      <div class="video-note">Picked to match today's focus area — worth watching before your next range session.</div>
+    </div>
+    ${onDeckHtml}
+    <div class="blueprint-section closing">
+      <p>Re-upload after a few practice sessions on this one thing — the read will pick up whether it's moved before suggesting anything new. Excited to see this swing again and build the next step of the plan together.</p>
+    </div>`;
 
   saveHistorySession({ date: new Date().toISOString(), key: primaryFault.key, label: primaryFault.label, severity: primaryFault.severity });
 
+  lastReportText = `Swing Blueprint — ${new Date().toLocaleDateString()}\n\n`
+    + `Focus: ${primaryFault.label}\n\n`
+    + `${summaryLine}\n\n`
+    + `${primaryFault.diagnose}\n\n`
+    + `Drill: ${primaryFault.drillName} — ${primaryFault.drill}\n\n`
+    + `Watch: ${primaryFault.video.title} (${primaryFault.video.channel}) — https://www.youtube.com/watch?v=${primaryFault.video.id}`;
+  actionsEl.classList.remove('hidden');
+
   buildNarrationSegments();
 }
+
+async function shareBlueprint(){
+  const noteEl = document.getElementById('shareNote');
+  if(!lastReportText) return;
+  if(navigator.share){
+    try{
+      await navigator.share({ title:'My Swing Blueprint', text: lastReportText });
+      return;
+    }catch(e){ /* user cancelled or share failed — fall through to clipboard */ }
+  }
+  try{
+    await navigator.clipboard.writeText(lastReportText);
+    noteEl.textContent = 'Copied to clipboard — paste it anywhere to share.';
+  }catch(e){
+    noteEl.textContent = 'Could not share automatically — select and copy the summary above.';
+  }
+  noteEl.classList.remove('hidden');
+  setTimeout(()=>noteEl.classList.add('hidden'), 4000);
+}
+document.getElementById('shareBtn').addEventListener('click', shareBlueprint);
 
 let narrationSegments = [];
 
@@ -859,7 +1136,8 @@ function buildNarrationSegments(){
   const c = computed;
   if(!primaryFault){ narrationSegments = []; return; }
   const focusByStage = {
-    tempo: 'top', separation: 'top', headspine: 'impact', release: 'impact', finish: 'finish'
+    tempo: 'top', separation: 'top', headspine: 'impact', release: 'impact', finish: 'finish',
+    hipSway: 'top', earlyExtension: 'impact'
   };
   const focusStage = focusByStage[primaryFault.key] || 'address';
 
@@ -899,7 +1177,10 @@ function playNarration(){
     alert('Voice narration is not supported in this browser.');
     return;
   }
-  if(narrationSegments.length===0) return;
+  if(narrationSegments.length===0){
+    document.getElementById('narrationCaption').textContent = 'No voice breakdown available for this clip — see the note above for why, then re-upload.';
+    return;
+  }
   narrationPlaying = true;
   document.getElementById('playNarrationBtn').classList.add('hidden');
   document.getElementById('stopNarrationBtn').classList.remove('hidden');
