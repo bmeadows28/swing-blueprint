@@ -199,16 +199,19 @@
     display:flex;
     justify-content:space-between;
     margin-top:12px;
-    gap:8px;
+    gap:6px;
+    overflow-x:auto;
+    padding-bottom:2px;
   }
   .keyframe-btn{
-    flex:1;
+    flex:1 1 0;
+    min-width:66px;
     background:var(--cream);
     border:1px solid var(--cream-2);
     border-radius:8px;
-    padding:8px 4px;
+    padding:8px 3px;
     text-align:center;
-    font-size:0.78rem;
+    font-size:0.72rem;
     cursor:pointer;
     color:var(--navy-2);
     font-weight:600;
@@ -436,9 +439,32 @@ const L = {
   lWrist:15, rWrist:16, lHip:23, rHip:24, lKnee:25, rKnee:26, lAnkle:27, rAnkle:28
 };
 
+const CHECKPOINT_KEYS = ['address','backHipHigh','top','downHipHigh','impact','throughHipHigh','finish'];
+const FOCUS_STAGE_BY_FAULT = {
+  tempo: 'top',
+  separation: 'top',
+  headspine: 'impact',
+  release: 'throughHipHigh',
+  finish: 'finish',
+  hipSway: 'top',
+  earlyExtension: 'impact'
+};
+
 let poseLandmarker = null;
+// MediaPipe's VIDEO mode requires strictly increasing timestamps for the life of
+// the poseLandmarker instance, not per-video — and we create that instance once
+// and reuse it across every upload in the page session. Deriving the timestamp
+// from each video's own local time (which resets near 0 every upload) meant any
+// upload after the first had most of its early frames rejected, since their
+// timestamps collided with ones already used by the prior video. This clock
+// never resets, so every call across every upload is guaranteed increasing.
+let poseClockMs = 0;
+function nextPoseTs(){
+  poseClockMs += 34;
+  return poseClockMs;
+}
 let frames = [];
-let keyIdx = { address:0, top:0, impact:0, finish:0 };
+let keyIdx = { address:0, backHipHigh:0, top:0, downHipHigh:0, impact:0, throughHipHigh:0, finish:0 };
 
 window.addEventListener('error', (e)=>{
   console.error('Uncaught error', e.error||e.message);
@@ -581,7 +607,7 @@ async function startProcessing(url){
         const t = metadata.mediaTime;
         try{
           procCtx.drawImage(proc, 0, 0, procCanvas.width, procCanvas.height);
-          const result = poseLandmarker.detectForVideo(procCanvas, Math.round(t*1000));
+          const result = poseLandmarker.detectForVideo(procCanvas, nextPoseTs());
           if(result.landmarks && result.landmarks.length){
             frames.push({ t, lm: result.landmarks[0] });
           }
@@ -600,7 +626,7 @@ async function startProcessing(url){
   // the original two-phase seek-and-sample approach.
   async function captureFramesBySeeking(){
     const SAMPLE_COUNT = 22;
-    async function sampleAt(t, tsOffset){
+    async function sampleAt(t){
       const clampedT = Math.min(t, Math.max(duration - 0.05, 0));
       await new Promise((res)=>{
         const onSeeked = ()=>{ proc.removeEventListener('seeked', onSeeked); res(); };
@@ -609,8 +635,7 @@ async function startProcessing(url){
         setTimeout(()=>{ proc.removeEventListener('seeked', onSeeked); res(); }, 1200);
       });
       procCtx.drawImage(proc, 0, 0, procCanvas.width, procCanvas.height);
-      const ts = Math.round(clampedT*1000) + tsOffset;
-      const result = poseLandmarker.detectForVideo(procCanvas, ts);
+      const result = poseLandmarker.detectForVideo(procCanvas, nextPoseTs());
       if(result.landmarks && result.landmarks.length){
         return { t: clampedT, lm: result.landmarks[0] };
       }
@@ -622,7 +647,7 @@ async function startProcessing(url){
       sampleTimes.push((duration * i) / (SAMPLE_COUNT - 1));
     }
     for(let i=0;i<sampleTimes.length;i++){
-      const f = await sampleAt(sampleTimes[i], i);
+      const f = await sampleAt(sampleTimes[i]);
       if(f) frames.push(f);
       setStatus('Reading your swing…', Math.min(70, 10 + (i/sampleTimes.length)*60));
       await new Promise(r=>setTimeout(r, 30));
@@ -644,7 +669,7 @@ async function startProcessing(url){
       const REFINE_COUNT = 14;
       for(let i=0;i<REFINE_COUNT;i++){
         const t = windowStart + ((windowEnd-windowStart) * i) / Math.max(REFINE_COUNT-1,1);
-        const f = await sampleAt(t, 1000+i);
+        const f = await sampleAt(t);
         if(f) frames.push(f);
         setStatus('Refining impact…', Math.min(95, 70 + (i/REFINE_COUNT)*25));
         await new Promise(r=>setTimeout(r, 30));
@@ -732,7 +757,49 @@ function detectKeyframes(){
 
   const addressI = 0;
   const finishI = n-1;
-  keyIdx = { address:addressI, top:Math.max(topI,1), impact:Math.max(impactI,topI+1), finish:finishI };
+  const topClamped = Math.max(topI,1);
+  const impactClamped = Math.max(impactI,topI+1);
+
+  // Three "hip-high" checkpoints — hands roughly hip height on the way back,
+  // hip height again coming into the hitting zone, and hip height just after
+  // release. Estimated as a fraction of the vertical travel between the
+  // nearest low point (address/impact) and the nearest high point (top), since
+  // hip height sits noticeably closer to address/impact than to the top of
+  // the swing for most golfers.
+  const HIP_HIGH_FRAC = 0.35;
+  function findClosestByHeight(startI, endI, targetY){
+    let best = startI, bestDiff = Infinity;
+    const lo = Math.min(startI,endI), hi = Math.max(startI,endI);
+    for(let i=lo+1;i<hi;i++){
+      const diff = Math.abs(wy[i]-targetY);
+      if(diff < bestDiff){ bestDiff = diff; best = i; }
+    }
+    return best;
+  }
+  const backHipHighTarget = wy[addressI] + HIP_HIGH_FRAC*(wy[topClamped]-wy[addressI]);
+  const backHipHighI = topClamped > addressI+1
+    ? findClosestByHeight(addressI, topClamped, backHipHighTarget)
+    : addressI;
+
+  const downHipHighTarget = wy[impactClamped] + HIP_HIGH_FRAC*(wy[topClamped]-wy[impactClamped]);
+  const downHipHighI = impactClamped > topClamped+1
+    ? findClosestByHeight(topClamped, impactClamped, downHipHighTarget)
+    : topClamped;
+
+  const throughHipHighTarget = wy[impactClamped] + HIP_HIGH_FRAC*(wy[finishI]-wy[impactClamped]);
+  const throughHipHighI = finishI > impactClamped+1
+    ? findClosestByHeight(impactClamped, finishI, throughHipHighTarget)
+    : impactClamped;
+
+  keyIdx = {
+    address:addressI,
+    backHipHigh:backHipHighI,
+    top:topClamped,
+    downHipHigh:downHipHighI,
+    impact:impactClamped,
+    throughHipHigh:throughHipHighI,
+    finish:finishI
+  };
 }
 
 function angleDeg(p1,p2){
@@ -1179,37 +1246,25 @@ let narrationSegments = [];
 function buildNarrationSegments(){
   const c = computed;
   if(!primaryFault){ narrationSegments = []; return; }
-  const focusByStage = {
-    tempo: 'top', separation: 'top', headspine: 'impact', release: 'impact', finish: 'finish',
-    hipSway: 'top', earlyExtension: 'impact'
-  };
-  const focusStage = focusByStage[primaryFault.key] || 'address';
+  const focusStage = FOCUS_STAGE_BY_FAULT[primaryFault.key] || 'address';
+
+  function seg(key, defaultText){
+    return {
+      key,
+      text: focusStage===key
+        ? `Here's ${CHECKPOINT_META[key].label.split(' — ')[0]}, and this is today's focus. ${primaryFault.diagnose}`
+        : defaultText
+    };
+  }
 
   narrationSegments = [
-    {
-      key:'address',
-      text: focusStage==='address'
-        ? `Here's address, and this is where today's focus starts. ${primaryFault.diagnose}`
-        : `Let's start at address. Stance width is ${c.stanceRatio.toFixed(2)} times your shoulder width, a reasonable base to work from.`
-    },
-    {
-      key:'top',
-      text: focusStage==='top'
-        ? `This is the top of the backswing, and this is today's focus. ${primaryFault.diagnose}`
-        : `Now the top of the backswing. Shoulders turned about ${c.shoulderTurn.toFixed(0)} degrees against hips at ${c.hipTurn.toFixed(0)} degrees.`
-    },
-    {
-      key:'impact',
-      text: focusStage==='impact'
-        ? `Right here at impact is today's focus. ${primaryFault.diagnose}`
-        : `Impact. Head moved about ${(c.headDrift*100).toFixed(0)} percent of shoulder width from address, spine angle changed about ${c.spineChange.toFixed(0)} degrees.`
-    },
-    {
-      key:'finish',
-      text: focusStage==='finish'
-        ? `And the finish, today's focus. ${primaryFault.diagnose}`
-        : `And the finish. Shoulders kept turning about ${c.throughRotation.toFixed(0)} degrees past impact.`
-    }
+    seg('address', `Let's start at address. Stance width is ${c.stanceRatio.toFixed(2)} times your shoulder width, a reasonable base to work from.`),
+    seg('backHipHigh', `Hands hip-high on the way back. This is an early checkpoint for how your rotation and swing plane are starting.`),
+    seg('top', `Now the top of the backswing. Shoulders turned about ${c.shoulderTurn.toFixed(0)} degrees against hips at ${c.hipTurn.toFixed(0)} degrees.`),
+    seg('downHipHigh', `Hands hip-high coming down, heading into the hitting zone.`),
+    seg('impact', `Impact. Head moved about ${(c.headDrift*100).toFixed(0)} percent of shoulder width from address, spine angle changed about ${c.spineChange.toFixed(0)} degrees.`),
+    seg('throughHipHigh', `Hands hip-high just after release. Lead arm extension changed ${c.releaseDelta.toFixed(0)} degrees here — watch that the arms extend toward the target rather than cutting across the ball.`),
+    seg('finish', `And the finish. Shoulders kept turning about ${c.throughRotation.toFixed(0)} degrees past impact.`)
   ];
   narrationSegments[narrationSegments.length-1].text += ` Drill to work on: ${primaryFault.drillName}. ${primaryFault.drill}`;
 }
@@ -1343,8 +1398,8 @@ function drawHeadMarker(ctx, lm, w, h){
 
 function drawWristPath(ctx, w, h, uptoIdx){
   ctx.save();
-  ctx.strokeStyle = 'rgba(198,161,91,0.6)';
-  ctx.lineWidth = 2.5;
+  ctx.strokeStyle = 'rgba(198,161,91,0.35)';
+  ctx.lineWidth = 2;
   ctx.beginPath();
   for(let i=0;i<=uptoIdx;i++){
     const p = wristPt(frames[i].lm);
@@ -1354,37 +1409,135 @@ function drawWristPath(ctx, w, h, uptoIdx){
   ctx.restore();
 }
 
-function drawTelestration(ctx, lm, idx, w, h){
+function drawStanceLine(ctx, lm, w, h){
+  drawTeachingLine(ctx, lm[L.lAnkle], lm[L.rAnkle], '#9fb3c8', 'Stance', w, h, 0.15);
+}
+
+function drawHandMarker(ctx, lm, w, h, label){
+  const p = wristPt(lm);
+  ctx.save();
+  ctx.beginPath();
+  ctx.arc(p.x*w, p.y*h, 7, 0, Math.PI*2);
+  ctx.fillStyle = '#E4C378';
+  ctx.fill();
+  ctx.font = '600 12px Public Sans, sans-serif';
+  ctx.fillStyle = '#E4C378';
+  ctx.strokeStyle = 'rgba(0,0,0,0.6)';
+  ctx.lineWidth = 3;
+  ctx.strokeText(label||'Hands', p.x*w+10, p.y*h-6);
+  ctx.fillText(label||'Hands', p.x*w+10, p.y*h-6);
+  ctx.restore();
+}
+
+function drawPlaneTangentLine(ctx, idx, color, label, w, h){
+  const lo = Math.max(0, idx-1), hi = Math.min(frames.length-1, idx+1);
+  if(hi<=lo) return;
+  const p1 = wristPt(frames[lo].lm), p2 = wristPt(frames[hi].lm);
+  const cur = wristPt(frames[idx].lm);
+  const dx = p2.x-p1.x, dy = p2.y-p1.y;
+  const mag = Math.hypot(dx,dy) || 1;
+  const ux = dx/mag, uy = dy/mag;
+  const a = { x: cur.x - ux*0.22, y: cur.y - uy*0.22 };
+  const b = { x: cur.x + ux*0.22, y: cur.y + uy*0.22 };
+  drawTeachingLine(ctx, a, b, color, label, w, h, 0);
+}
+
+function drawCheckpointBadge(ctx, text, w, h){
+  ctx.save();
+  ctx.font = '600 13px Public Sans, sans-serif';
+  const paddingX = 10, boxH = 24;
+  const textW = ctx.measureText(text).width;
+  const boxW = textW + paddingX*2;
+  ctx.fillStyle = 'rgba(21,34,56,0.72)';
+  ctx.beginPath();
+  if(ctx.roundRect) ctx.roundRect(10, 10, boxW, boxH, 6); else ctx.rect(10, 10, boxW, boxH);
+  ctx.fill();
+  ctx.fillStyle = '#F6F2E9';
+  ctx.fillText(text, 10+paddingX, 10+boxH/2+4);
+  ctx.restore();
+}
+
+const CHECKPOINT_META = {
+  address:        { label:'Address — Posture & Stance' },
+  backHipHigh:    { label:'Takeaway (Hip-High) — Rotation & Plane' },
+  top:            { label:'Top — Rotation, Hands & Height' },
+  downHipHigh:    { label:'Transition (Hip-High) — Rotation & Plane' },
+  impact:         { label:'Impact — Rotation, Plane, Height & Hands' },
+  throughHipHigh: { label:'Release (Hip-High) — Rotation, Plane & Arm Path' },
+  finish:         { label:'Finish — Posture & Hands' }
+};
+
+function drawCheckpointOverlay(ctx, lm, checkpointKey, idx, w, h){
   const lSh = lm[L.lShoulder], rSh = lm[L.rShoulder];
   const lHip = lm[L.lHip], rHip = lm[L.rHip];
-  const shM = mid(lSh, rSh);
-  const hipM = mid(lHip, rHip);
 
-  if(!primaryFault){
-    drawTeachingLine(ctx, lSh, rSh, '#C6A15B', null, w, h, 0.25);
-    return;
-  }
+  drawWristPath(ctx, w, h, frames.length-1);
 
-  switch(primaryFault.key){
-    case 'separation':
+  const meta = CHECKPOINT_META[checkpointKey] || CHECKPOINT_META.address;
+  drawCheckpointBadge(ctx, meta.label, w, h);
+
+  switch(checkpointKey){
+    case 'address':
+      drawTeachingLine(ctx, mid(lHip,rHip), mid(lSh,rSh), '#F6F2E9', 'Spine', w, h, 0.25);
+      drawStanceLine(ctx, lm, w, h);
+      break;
+    case 'backHipHigh':
       drawTeachingLine(ctx, lHip, rHip, '#E4C378', 'Hips', w, h, 0.3);
       drawTeachingLine(ctx, lSh, rSh, '#C6A15B', 'Shoulders', w, h, 0.3);
+      drawPlaneTangentLine(ctx, idx, '#8fd6c9', 'Swing Plane', w, h);
       break;
-    case 'headspine':
-      drawTeachingLine(ctx, hipM, shM, '#F6F2E9', 'Spine', w, h, 0.25);
+    case 'top':
+      drawTeachingLine(ctx, lHip, rHip, '#E4C378', 'Hips', w, h, 0.3);
+      drawTeachingLine(ctx, lSh, rSh, '#C6A15B', 'Shoulders', w, h, 0.3);
+      drawHandMarker(ctx, lm, w, h, 'Hands');
       drawHeadMarker(ctx, lm, w, h);
       break;
-    case 'release':
-      drawTeachingLine(ctx, lSh, lm[L.lWrist], '#C6A15B', 'Lead arm', w, h, 0.05);
+    case 'downHipHigh':
+      drawTeachingLine(ctx, lHip, rHip, '#E4C378', 'Hips', w, h, 0.3);
+      drawTeachingLine(ctx, lSh, rSh, '#C6A15B', 'Shoulders', w, h, 0.3);
+      drawPlaneTangentLine(ctx, idx, '#8fd6c9', 'Swing Plane', w, h);
+      break;
+    case 'impact':
+      drawTeachingLine(ctx, lHip, rHip, '#E4C378', 'Hips', w, h, 0.3);
+      drawTeachingLine(ctx, lSh, rSh, '#C6A15B', 'Shoulders', w, h, 0.3);
+      drawPlaneTangentLine(ctx, idx, '#8fd6c9', 'Swing Plane', w, h);
+      drawHeadMarker(ctx, lm, w, h);
+      drawHandMarker(ctx, lm, w, h, 'Hands');
+      break;
+    case 'throughHipHigh':
+      drawTeachingLine(ctx, lHip, rHip, '#E4C378', 'Hips', w, h, 0.3);
+      drawTeachingLine(ctx, lSh, rSh, '#C6A15B', 'Shoulders', w, h, 0.3);
+      drawPlaneTangentLine(ctx, idx, '#8fd6c9', 'Swing Plane', w, h);
+      drawTeachingLine(ctx, lSh, lm[L.lWrist], '#f2a65a', 'Lead arm', w, h, 0.05);
       break;
     case 'finish':
-      drawTeachingLine(ctx, lSh, rSh, '#C6A15B', 'Shoulders', w, h, 0.3);
-      break;
-    case 'tempo':
-    default:
-      drawWristPath(ctx, w, h, idx);
+      drawTeachingLine(ctx, mid(lHip,rHip), mid(lSh,rSh), '#F6F2E9', 'Spine', w, h, 0.25);
+      drawHandMarker(ctx, lm, w, h, 'Hands');
       break;
   }
+
+  if(primaryFault && FOCUS_STAGE_BY_FAULT[primaryFault.key] === checkpointKey){
+    ctx.save();
+    ctx.font = '600 12px Public Sans, sans-serif';
+    ctx.fillStyle = 'rgba(21,34,56,0.72)';
+    const text = `★ Today's Focus: ${primaryFault.label}`;
+    const boxW = ctx.measureText(text).width + 20;
+    ctx.beginPath();
+    if(ctx.roundRect) ctx.roundRect(10, 40, boxW, 22, 6); else ctx.rect(10, 40, boxW, 22);
+    ctx.fill();
+    ctx.fillStyle = '#E4C378';
+    ctx.fillText(text, 20, 55);
+    ctx.restore();
+  }
+}
+
+function nearestCheckpointKey(idx){
+  let bestKey = 'address', bestDiff = Infinity;
+  for(const k of CHECKPOINT_KEYS){
+    const diff = Math.abs(keyIdx[k]-idx);
+    if(diff < bestDiff){ bestDiff = diff; bestKey = k; }
+  }
+  return bestKey;
 }
 
 function drawOverlayAtCurrentTime(){
@@ -1392,8 +1545,9 @@ function drawOverlayAtCurrentTime(){
   syncOverlayToVideo(resultVideo, resultCanvas);
   const idx = nearestFrameIndex(resultVideo.currentTime);
   const lm = frames[idx].lm;
+  const checkpointKey = nearestCheckpointKey(idx);
   resultCtx.clearRect(0,0,resultCanvas.width,resultCanvas.height);
-  drawTelestration(resultCtx, lm, idx, resultCanvas.width, resultCanvas.height);
+  drawCheckpointOverlay(resultCtx, lm, checkpointKey, idx, resultCanvas.width, resultCanvas.height);
 }
 
 
@@ -1403,7 +1557,15 @@ window.addEventListener('resize', ()=>{
 
 function renderKeyframeRail(){
   const rail = document.getElementById('keyframeRail');
-  const labels = [['address','Address'],['top','Top'],['impact','Impact'],['finish','Finish']];
+  const labels = [
+    ['address','Address'],
+    ['backHipHigh','Takeaway'],
+    ['top','Top'],
+    ['downHipHigh','Transition'],
+    ['impact','Impact'],
+    ['throughHipHigh','Release'],
+    ['finish','Finish']
+  ];
   rail.innerHTML = labels.map(([k,lab])=>`<div class="keyframe-btn" data-key="${k}">${lab}</div>`).join('');
   rail.querySelectorAll('.keyframe-btn').forEach(btn=>{
     btn.addEventListener('click', ()=>jumpToKey(btn.dataset.key));
