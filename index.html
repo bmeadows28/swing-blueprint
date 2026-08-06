@@ -232,7 +232,7 @@
   }
   .metrics-grid{
     display:grid;
-    grid-template-columns:repeat(auto-fit,minmax(230px,1fr));
+    grid-template-columns:repeat(auto-fit,minmax(260px,1fr));
     gap:14px;
     margin-top:8px;
   }
@@ -259,6 +259,61 @@
     font-size:0.85rem;
     color:var(--navy-2);
   }
+  .checkpoint-metric .label{
+    font-family:'Frank Ruhl Libre',serif;
+    text-transform:none;
+    letter-spacing:0;
+    font-size:1rem;
+    color:var(--navy);
+    font-weight:700;
+    margin-bottom:6px;
+  }
+  .checkpoint-sub{
+    font-family:'Public Sans',sans-serif;
+    text-transform:none;
+    font-weight:500;
+    font-size:0.78rem;
+    color:var(--muted);
+  }
+  .metric-bullets{
+    margin:0 0 10px;
+    padding-left:18px;
+    font-size:0.85rem;
+    color:var(--navy-2);
+  }
+  .metric-bullets li{ margin-bottom:4px; }
+  .metric-rec{
+    font-size:0.85rem;
+    color:var(--ink);
+    border-top:1px solid var(--cream-2);
+    padding-top:8px;
+  }
+  .angle-select{
+    margin-bottom:16px;
+  }
+  .angle-select-label{
+    font-size:0.85rem;
+    color:var(--navy-2);
+    margin-bottom:8px;
+    font-weight:600;
+  }
+  .angle-btns{
+    display:flex;
+    gap:8px;
+    flex-wrap:wrap;
+  }
+  .angle-btn{
+    background:var(--cream);
+    border:1px solid var(--cream-2);
+    border-radius:999px;
+    padding:7px 16px;
+    font-size:0.82rem;
+    font-weight:600;
+    color:var(--navy-2);
+    cursor:pointer;
+  }
+  .angle-btn:hover{ background:var(--cream-2); }
+  .angle-btn.active{ background:var(--navy); color:var(--cream); border-color:var(--navy); }
   .blueprint-text{
     font-size:1rem;
     line-height:1.7;
@@ -379,6 +434,14 @@
       <li>Down-the-line or face-on, full body in frame</li>
       <li>Trim tight: start right at your stance, end just after the finish — <b>2-6 seconds</b> total, nothing extra</li>
     </ul>
+    <div class="angle-select" id="angleSelect">
+      <div class="angle-select-label">Which angle did you film from? (helps us read head/body movement correctly)</div>
+      <div class="angle-btns">
+        <button type="button" class="angle-btn" data-angle="dtl">Down-the-Line</button>
+        <button type="button" class="angle-btn" data-angle="faceon">Face-On</button>
+        <button type="button" class="angle-btn active" data-angle="unknown">Not Sure</button>
+      </div>
+    </div>
     <label class="upload-zone" id="uploadZone">
       <input type="file" id="fileInput" accept="video/*">
       <div class="upload-icon-box">🎥</div>
@@ -420,6 +483,7 @@
     <div class="blueprint-text" id="blueprintText"></div>
     <div class="blueprint-actions hidden" id="blueprintActions">
       <button class="btn gold small" id="shareBtn">Share These Results</button>
+      <button class="btn small" id="downloadPdfBtn">Download PDF</button>
       <span class="share-note hidden" id="shareNote"></span>
     </div>
   </div>
@@ -519,6 +583,13 @@ initModel().catch(async (e)=>{
     setStatus('Could not load the pose model. Check your internet connection and reload.', 0);
     console.error(err);
   }
+});
+
+document.querySelectorAll('.angle-btn').forEach(btn=>{
+  btn.addEventListener('click', ()=>{
+    cameraAngle = btn.dataset.angle;
+    document.querySelectorAll('.angle-btn').forEach(b=>b.classList.toggle('active', b===btn));
+  });
 });
 
 uploadZone.addEventListener('click', (e)=>{ if(e.target.tagName!=='INPUT') fileInput.click(); });
@@ -808,7 +879,38 @@ function angleDeg(p1,p2){
 function dist(p1,p2){ return Math.hypot(p2.x-p1.x, p2.y-p1.y); }
 function mid(a,b){ return {x:(a.x+b.x)/2, y:(a.y+b.y)/2}; }
 
+function spineAngleAt(f){
+  const hipM = mid(f[L.lHip], f[L.rHip]);
+  const shM = mid(f[L.lShoulder], f[L.rShoulder]);
+  return Math.abs(90 - Math.abs(angleDeg(hipM, shM)));
+}
+function kneeAngleAt(f, side){
+  const hip = f[side==='l'?L.lHip:L.rHip];
+  const knee = f[side==='l'?L.lKnee:L.rKnee];
+  const ankle = f[side==='l'?L.lAnkle:L.rAnkle];
+  const a1 = angleDeg(knee, hip), a2 = angleDeg(knee, ankle);
+  return Math.abs(a1-a2);
+}
+function elbowAngleAt(f, side){
+  const sh = f[side==='l'?L.lShoulder:L.rShoulder];
+  const el = f[side==='l'?L.lElbow:L.rElbow];
+  const wr = f[side==='l'?L.lWrist:L.rWrist];
+  const a1 = angleDeg(el, sh), a2 = angleDeg(el, wr);
+  return Math.abs(a1-a2);
+}
+function angleFromVerticalDeg(p1,p2){
+  const dx = Math.abs(p2.x-p1.x), dy = Math.abs(p2.y-p1.y);
+  return Math.atan2(dx, dy) * 180/Math.PI;
+}
+function planeTangentAngleDeg(idx){
+  const lo = Math.max(0, idx-1), hi = Math.min(frames.length-1, idx+1);
+  if(hi<=lo) return null;
+  return angleFromVerticalDeg(wristPt(frames[lo].lm), wristPt(frames[hi].lm));
+}
+
 let computed = {};
+let checkpointData = {};
+let cameraAngle = 'unknown';
 
 function buildMetrics(){
   const fA = frames[keyIdx.address].lm, fT = frames[keyIdx.top].lm,
@@ -829,12 +931,7 @@ function buildMetrics(){
   const shoulderWidthA = dist(fA[L.lShoulder], fA[L.rShoulder]);
   const headDrift = dist(fA[L.nose], fI[L.nose]) / (shoulderWidthA||1);
 
-  function spineAngle(f){
-    const hipM = mid(f[L.lHip], f[L.rHip]);
-    const shM = mid(f[L.lShoulder], f[L.rShoulder]);
-    return Math.abs(90 - Math.abs(angleDeg(hipM, shM)));
-  }
-  const spineA = spineAngle(fA), spineI = spineAngle(fI);
+  const spineA = spineAngleAt(fA), spineI = spineAngleAt(fI);
   const spineChange = Math.abs(spineI - spineA);
 
   const stanceWidth = dist(fA[L.lAnkle], fA[L.rAnkle]);
@@ -844,33 +941,15 @@ function buildMetrics(){
   const hipMidT = mid(fT[L.lHip], fT[L.rHip]);
   const hipSway = Math.abs(hipMidT.x - hipMidA.x) / (stanceWidth||1);
 
-  function kneeAngle(f, side){
-    const hip = f[side==='l'?L.lHip:L.rHip];
-    const knee = f[side==='l'?L.lKnee:L.rKnee];
-    const ankle = f[side==='l'?L.lAnkle:L.rAnkle];
-    const a1 = angleDeg(knee, hip), a2 = angleDeg(knee, ankle);
-    return Math.abs(a1-a2);
-  }
-  const kneeFlexA = (kneeAngle(fA,'l') + kneeAngle(fA,'r')) / 2;
-  const kneeFlexI = (kneeAngle(fI,'l') + kneeAngle(fI,'r')) / 2;
+  const kneeFlexA = (kneeAngleAt(fA,'l') + kneeAngleAt(fA,'r')) / 2;
+  const kneeFlexI = (kneeAngleAt(fI,'l') + kneeAngleAt(fI,'r')) / 2;
   const earlyExtension = kneeFlexI - kneeFlexA;
 
-  function angleFromVerticalDeg(p1,p2){
-    const dx = Math.abs(p2.x-p1.x), dy = Math.abs(p2.y-p1.y);
-    return Math.atan2(dx, dy) * 180/Math.PI;
-  }
   const swingPlaneAngle = angleFromVerticalDeg(wristPt(fA), wristPt(fT));
 
   const midAfterI = frames[Math.min(keyIdx.impact + Math.round((keyIdx.finish-keyIdx.impact)*0.25), keyIdx.finish)].lm;
-  function elbowAngle(f, side){
-    const sh = f[side==='l'?L.lShoulder:L.rShoulder];
-    const el = f[side==='l'?L.lElbow:L.rElbow];
-    const wr = f[side==='l'?L.lWrist:L.rWrist];
-    const a1 = angleDeg(el, sh), a2 = angleDeg(el, wr);
-    return Math.abs(a1-a2);
-  }
-  const extensionAtImpact = elbowAngle(fI,'l');
-  const extensionAfter = elbowAngle(midAfterI,'l');
+  const extensionAtImpact = elbowAngleAt(fI,'l');
+  const extensionAfter = elbowAngleAt(midAfterI,'l');
   const releaseDelta = extensionAfter - extensionAtImpact;
 
   const shoulderAngleI = angleDeg(fI[L.lShoulder], fI[L.rShoulder]);
@@ -884,86 +963,170 @@ function buildMetrics(){
     hipSway, earlyExtension, swingPlaneAngle
   };
 
+  checkpointData = computeCheckpointData();
   renderMetrics();
 }
 
-function qualRead(val, good, ok){
-  if(val<=good) return 'Solid';
-  if(val<=ok) return 'Workable';
-  return 'Worth a look';
+// Per-checkpoint readouts: head shift, hand/clubface rotation (a body-based
+// proxy — no clubface tracking is available), rotation, swing-plane hand-path
+// estimate, and lower-body change, all measured relative to address.
+function computeCheckpointData(){
+  const addressLm = frames[keyIdx.address].lm;
+  const addressShoulderW = dist(addressLm[L.lShoulder], addressLm[L.rShoulder]) || 1;
+  const addressHandAngle = angleDeg(addressLm[L.lWrist], addressLm[L.rWrist]);
+  const addressShoulderAngle = angleDeg(addressLm[L.lShoulder], addressLm[L.rShoulder]);
+  const addressHipAngle = angleDeg(addressLm[L.lHip], addressLm[L.rHip]);
+  const addressKneeFlex = (kneeAngleAt(addressLm,'l') + kneeAngleAt(addressLm,'r')) / 2;
+  const stanceWidth = dist(addressLm[L.lAnkle], addressLm[L.rAnkle]) || 1;
+
+  const data = {};
+  for(const key of CHECKPOINT_KEYS){
+    const idx = keyIdx[key];
+    const lm = frames[idx].lm;
+
+    const headDX = (lm[L.nose].x - addressLm[L.nose].x) / addressShoulderW;
+    const headDY = (lm[L.nose].y - addressLm[L.nose].y) / addressShoulderW;
+
+    let handRotation = angleDeg(lm[L.lWrist], lm[L.rWrist]) - addressHandAngle;
+    while(handRotation>180) handRotation -= 360;
+    while(handRotation<-180) handRotation += 360;
+
+    const shoulderRot = Math.abs(angleDeg(lm[L.lShoulder], lm[L.rShoulder]) - addressShoulderAngle);
+    const hipRot = Math.abs(angleDeg(lm[L.lHip], lm[L.rHip]) - addressHipAngle);
+
+    const kneeFlex = (kneeAngleAt(lm,'l') + kneeAngleAt(lm,'r')) / 2;
+    const lowerBodyChange = kneeFlex - addressKneeFlex;
+
+    const planeAngle = planeTangentAngleDeg(idx);
+    const handDist = dist(wristPt(lm), mid(lm[L.lHip],lm[L.rHip])) / addressShoulderW;
+
+    const hipMidX = mid(lm[L.lHip],lm[L.rHip]).x;
+    const stanceMidX = (lm[L.lAnkle].x + lm[L.rAnkle].x) / 2;
+    const balanceOffset = (hipMidX - stanceMidX) / stanceWidth;
+
+    data[key] = { headDX, headDY, handRotation, shoulderRot, hipRot, kneeFlex, lowerBodyChange, planeAngle, handDist, balanceOffset };
+  }
+  return data;
+}
+
+function horizontalAxisLabel(){
+  if(cameraAngle==='dtl') return 'toward/away from the target line (sway)';
+  if(cameraAngle==='faceon') return 'toward/away from the target (weight shift)';
+  return 'side to side';
+}
+function fmtPct(v){ return `${(v*100).toFixed(0)}%`; }
+function fmtDeg(v){ return `${v>=0?'+':''}${v.toFixed(0)}°`; }
+
+function describeCheckpoint(key){
+  const d = checkpointData[key];
+  const c = computed;
+  const hMag = Math.hypot(d.headDX, d.headDY);
+  const headSeverity = hMag>0.25 ? 'notable' : hMag>0.12 ? 'some' : 'minimal';
+  const axisH = horizontalAxisLabel();
+
+  if(key==='address'){
+    const balance = Math.abs(d.balanceOffset)<0.12 ? 'centered over your base' : (d.balanceOffset<0 ? 'favoring one side' : 'favoring the other side');
+    return {
+      title:'Address', sub:'Posture, Stance & Hands',
+      bullets:[
+        `Stance: ${c.stanceRatio.toFixed(2)}× shoulder width — ${c.stanceRatio<0.9?'narrow':c.stanceRatio>1.3?'wide':'a common width'} for a full swing.`,
+        `Posture (spine angle): tilted about ${spineAngleAt(frames[keyIdx.address].lm).toFixed(0)}° from vertical at setup.`,
+        `Balance: weight looks ${balance}.`,
+        `Hands: sitting about ${d.handDist.toFixed(2)}× shoulder width from your body.`
+      ],
+      recommendation: c.stanceRatio<0.85 ? 'Widen your stance slightly for a more stable base to turn against.'
+        : c.stanceRatio>1.4 ? 'Narrow your stance a touch — too wide can limit hip turn.'
+        : Math.abs(d.balanceOffset)>=0.12 ? 'Re-center your weight evenly between your feet at address.'
+        : 'Solid starting position — nothing urgent to change here.'
+    };
+  }
+  if(key==='top'){
+    return {
+      title:'Top of Swing', sub:'Rotation, Hands & Height',
+      bullets:[
+        `Head: ${headSeverity} shift ${axisH}, about ${fmtPct(hMag)} of shoulder width from address.`,
+        `Hands/clubface (body proxy): rotated about ${fmtDeg(d.handRotation)} from address.`,
+        `Rotation: shoulders ${c.shoulderTurn.toFixed(0)}°, hips ${c.hipTurn.toFixed(0)}° — about ${c.separation.toFixed(0)}° of separation.`,
+        `Swing plane (hand-path estimate): about ${c.swingPlaneAngle.toFixed(0)}° from vertical.`,
+        `Lower body: knee flex changed ${fmtDeg(d.lowerBodyChange)} from address.`
+      ],
+      recommendation: c.separation<28 ? 'Work on resisting with the lower body a bit longer in the backswing to build more coil.' : 'A solid amount of coil here — the goal now is using it efficiently on the way down.'
+    };
+  }
+  if(key==='impact'){
+    return {
+      title:'Impact', sub:'Rotation, Plane, Height & Hands',
+      bullets:[
+        `Head: ${headSeverity} shift ${axisH}, about ${fmtPct(hMag)} of shoulder width from address.`,
+        `Hands/clubface (body proxy): rotated about ${fmtDeg(d.handRotation)} from address.`,
+        `Rotation: shoulders and hips have returned close to square to address.`,
+        `Swing plane (hand-path estimate): about ${d.planeAngle!=null?d.planeAngle.toFixed(0)+'°':'—'} from vertical.`,
+        `Lower body: knee flex changed ${fmtDeg(c.earlyExtension)} from address — ${c.earlyExtension<8?'held well':'standing up out of posture'}.`
+      ],
+      recommendation: c.earlyExtension>=8
+        ? 'Standing up through impact like this often shows up as thin or blocked shots — work on holding your knee flex into the ball.'
+        : 'Posture is holding well into the ball here — a good foundation for consistent strike.'
+    };
+  }
+  if(key==='finish'){
+    const balance = Math.abs(d.balanceOffset)<0.15 ? 'balanced over your lead side' : 'still working toward a fully balanced lead-side finish';
+    return {
+      title:'Finish', sub:'Posture & Hand Position',
+      bullets:[
+        `Balance: ${balance}.`,
+        `Posture: spine angle finished about ${fmtDeg(spineAngleAt(frames[keyIdx.finish].lm) - spineAngleAt(frames[keyIdx.address].lm))} different from address.`,
+        `Hands/club: ${c.throughRotation>25?'fully released into a high finish':'finish looks a bit short or cut off'}.`
+      ],
+      recommendation: c.throughRotation>25 ? 'A full, committed finish — keep it.' : 'Work on holding a full, balanced finish for a three-count after every swing.'
+    };
+  }
+
+  // The three hip-high checkpoints share the same observation set.
+  const stageMeta = {
+    backHipHigh:   { title:'Takeaway', sub:'Hip-High — Rotation & Plane' },
+    downHipHigh:   { title:'Transition', sub:'Hip-High — Rotation & Plane' },
+    throughHipHigh:{ title:'Release', sub:'Hip-High — Rotation, Plane & Arm Path' }
+  }[key];
+  const bullets = [
+    `Head: ${headSeverity} shift ${axisH}, about ${fmtPct(hMag)} of shoulder width from address.`,
+    `Hands/clubface (body proxy): rotated about ${fmtDeg(d.handRotation)} from address.`,
+    `Rotation: shoulders ${d.shoulderRot.toFixed(0)}°, hips ${d.hipRot.toFixed(0)}° from address.`,
+    `Swing plane (hand-path estimate): about ${d.planeAngle!=null?d.planeAngle.toFixed(0)+'°':'—'} from vertical.`
+  ];
+  let recommendation;
+  if(key==='throughHipHigh'){
+    bullets.push(`Watch for: the lead arm cutting across the ball rather than extending toward the target.`);
+    recommendation = c.releaseDelta<10
+      ? 'Extension looks limited just after impact — work on the arms extending toward the target here rather than folding early.'
+      : 'Extension through this point looks solid — keep the arms working toward the target.';
+  } else {
+    bullets.push(`Lower body: knee flex changed ${fmtDeg(d.lowerBodyChange)} from address.`);
+    recommendation = hMag>0.2
+      ? 'Focus on keeping your head and upper body more centered through this part of the swing.'
+      : 'This checkpoint looks solid — keep the same feel here.';
+  }
+  return { title:stageMeta.title, sub:stageMeta.sub, bullets, recommendation };
 }
 
 function renderMetrics(){
   const grid = document.getElementById('metricsGrid');
   const c = computed;
-  const items = [
-    {
-      label:'Tempo (back : down)',
-      value: `${c.tempoRatio.toFixed(1)} : 1`,
-      read: `Tour average runs close to 3:1. ${c.tempoRatio>3.6?'Yours is on the slower/longer backswing side.': c.tempoRatio<2.4?'Yours is quick into transition.':'Yours sits close to that range.'}`
-    },
-    {
-      label:'Shoulder Rotation',
-      value: `${c.shoulderTurn.toFixed(0)}°`,
-      read: `Tour average shoulder turn to the top runs close to 90-100°. ${c.shoulderTurn<80?'Yours is on the shorter side — may be limiting how much coil you build.':c.shoulderTurn>110?'Yours is a long turn — check that it stays controlled and doesn\'t tip the spine angle.':'Yours sits in a common working range.'}`
-    },
-    {
-      label:'Hip Rotation',
-      value: `${c.hipTurn.toFixed(0)}°`,
-      read: `Tour average hip turn to the top runs close to 45-50°. ${c.hipTurn<35?'Yours is fairly restricted — often tied to limited hip mobility.':c.hipTurn>60?'Yours is turning a lot — worth checking whether that\'s a true turn or a slide (see Lower Body Sway below).':'Yours sits in a common working range.'}`
-    },
-    {
-      label:'Hip-Shoulder Separation',
-      value: `${c.separation.toFixed(0)}°`,
-      read: `Shoulders turned ~${c.shoulderTurn.toFixed(0)}° vs hips ~${c.hipTurn.toFixed(0)}° to the top, for an estimated X-factor of ${c.separation.toFixed(0)}°. Tour average X-factor runs close to 42-45°. ${qualRead(Math.abs(c.separation-43),15,25)} — estimated from one camera angle.`
-    },
-    {
-      label:'Head Movement',
-      value: `${(c.headDrift*100).toFixed(0)}% of shoulder width`,
-      read: c.headDrift<0.12 ? 'Very stable through the ball.' : c.headDrift<0.25 ? 'Some drift address to impact — normal for most golfers.' : 'Noticeable drift address to impact — worth checking on video side by side.'
-    },
-    {
-      label:'Spine Angle Change',
-      value: `${c.spineChange.toFixed(0)}°`,
-      read: c.spineChange<8 ? 'Spine angle held well through impact.' : 'Spine angle shifts a fair amount from address to impact.'
-    },
-    {
-      label:'Stance Width',
-      value: `${c.stanceRatio.toFixed(2)}× shoulder width`,
-      read: c.stanceRatio<0.9 ? 'Narrower stance — fine for control, may limit power.' : c.stanceRatio>1.3 ? 'Wide stance — stable base, watch hip turn room.' : 'In a common range relative to shoulder width.'
-    },
-    {
-      label:'Release (lead arm)',
-      value: `${c.releaseDelta>=0?'+':''}${c.releaseDelta.toFixed(0)}°`,
-      read: c.releaseDelta>10 ? 'Good extension through the ball.' : 'Limited extension just after impact — may point to an early flip or hold-off.'
-    },
-    {
-      label:'Follow-Through Rotation',
-      value: `${c.throughRotation.toFixed(0)}°`,
-      read: c.throughRotation>25 ? 'Full rotation into the finish.' : 'Rotation into the finish looks abbreviated — check if the swing is being cut off.'
-    },
-    {
-      label:'Lower Body Sway',
-      value: `${(c.hipSway*100).toFixed(0)}% of stance width`,
-      read: c.hipSway<0.15 ? 'Hips are turning in place rather than sliding — solid, stable base.' : c.hipSway<0.3 ? 'Some lateral hip slide address to top — common, and usually worth tightening up.' : 'Significant lateral hip slide — a classic sign of swaying rather than turning, which costs both power and consistency.'
-    },
-    {
-      label:'Lower Body Stability (Early Extension)',
-      value: `${c.earlyExtension>=0?'+':''}${c.earlyExtension.toFixed(0)}°`,
-      read: c.earlyExtension<8 ? 'Knee flex held well from address to impact — good posture through the ball.' : 'Legs are straightening noticeably from address to impact — a common sign of standing up out of posture ("early extension"), which pushes the hips toward the ball and often causes thin or blocked shots.'
-    },
-    {
-      label:'Swing Plane (hand-path estimate)',
-      value: `${c.swingPlaneAngle.toFixed(0)}° from vertical`,
-      read: `Hand path from address to the top, estimated from this one camera angle — not the actual clubhead. ${c.swingPlaneAngle<35?'A steeper, more upright path.':c.swingPlaneAngle>55?'A flatter, rounder path.':'A fairly neutral path.'} Neither is automatically right or wrong — it should match the rest of your swing and the angle you filmed from.`
-    }
-  ];
-  grid.innerHTML = items.map(it=>`
+  const tempoCard = `
     <div class="metric">
-      <div class="label">${it.label}</div>
-      <div class="value">${it.value}</div>
-      <div class="read">${it.read}</div>
-    </div>`).join('');
+      <div class="label">Tempo (back : down)</div>
+      <div class="value">${c.tempoRatio.toFixed(1)} : 1</div>
+      <div class="read">Tour average runs close to 3:1. ${c.tempoRatio>3.6?'Yours is on the slower/longer backswing side.': c.tempoRatio<2.4?'Yours is quick into transition.':'Yours sits close to that range.'}</div>
+    </div>`;
+  const checkpointCards = CHECKPOINT_KEYS.map(key=>{
+    const d = describeCheckpoint(key);
+    return `
+    <div class="metric checkpoint-metric">
+      <div class="label">${d.title} <span class="checkpoint-sub">— ${d.sub}</span></div>
+      <ul class="metric-bullets">${d.bullets.map(b=>`<li>${b}</li>`).join('')}</ul>
+      <div class="metric-rec"><b>Try:</b> ${d.recommendation}</div>
+    </div>`;
+  }).join('');
+  grid.innerHTML = tempoCard + checkpointCards;
 }
 
 // --- Coaching triage engine ---
@@ -986,7 +1149,10 @@ function getFaultCatalog(c){
         free:'Count "1...2-3" out loud on every practice swing until it feels automatic — no equipment needed.',
         purchase:'A clip-on golf tempo trainer / metronome (sets an audible beat for backswing and downswing).'
       },
-      video:{ id:'uLXOF4wDmMk', title:'Start Your Swing Like This For Better Tempo', channel:'Michael Breed' }
+      video:{ id:'uLXOF4wDmMk', title:'Start Your Swing Like This For Better Tempo', channel:'Michael Breed' },
+      ballFlightNote:'Rushed tempo makes the low point of your swing harder to repeat, which commonly shows up as thin and fat shots mixed together rather than one consistent miss.',
+      mentalTip:'Before each shot, take one slow rehearsal swing at the tempo you\'re working on — treat it as part of your pre-shot routine, not an afterthought.',
+      equipment:['A phone or watch metronome app set to a 3:1 beat','An alignment stick to rehearse the tempo without hitting a ball']
     },
     {
       key:'separation',
@@ -1002,7 +1168,10 @@ function getFaultCatalog(c){
         free:'Cross a golf club or alignment stick behind your shoulders and make slow turns, feeling the hips resist while the shoulders keep rotating against them.',
         purchase:'A resistance band anchored at hip height, or an alignment-stick "separation" trainer.'
       },
-      video:{ id:'rBhSxSyVZtY', title:'Increase Hip & Shoulder Separation (X-Factor) in The Golf Swing', channel:'PowerCore360' }
+      video:{ id:'rBhSxSyVZtY', title:'Increase Hip & Shoulder Separation (X-Factor) in The Golf Swing', channel:'PowerCore360' },
+      ballFlightNote:'Limited separation mostly costs distance rather than changing shot shape; if the extra turn is coming from a slide instead of rotation, that tends to show up as inconsistent start direction instead.',
+      mentalTip:'Feel like you\'re loading a rubber band in the backswing — the tension itself is the power source, not extra arm swing.',
+      equipment:['An alignment stick across the shoulders to feel the turn','A resistance band anchored at hip height']
     },
     {
       key:'headspine',
@@ -1016,7 +1185,10 @@ function getFaultCatalog(c){
         free:'The headcover-under-chin drill above, or swing next to a wall/mirror so you can see any head drift immediately.',
         purchase:'A swing-plane and posture trainer that uses an alignment rod or laser to flag head and spine movement.'
       },
-      video:{ id:'MgxSoAW7vzw', title:'Keep Your Head Behind The Ball With The Driver', channel:'Me And My Golf' }
+      video:{ id:'MgxSoAW7vzw', title:'Keep Your Head Behind The Ball With The Driver', channel:'Me And My Golf' },
+      ballFlightNote:'A moving center shifts your swing\'s low point, which commonly shows up as thin and fat shots mixed together, and contact that wanders around the face.',
+      mentalTip:'Pick a single dimple on the ball and commit to watching that exact spot until well after contact.',
+      equipment:['A headcover or small towel under the chin','A mirror or phone propped up for visual feedback']
     },
     {
       key:'release',
@@ -1030,7 +1202,10 @@ function getFaultCatalog(c){
         free:'The towel-under-both-arms drill above, using any bath towel.',
         purchase:'An impact bag (great feedback for extension and a square release through the hitting zone).'
       },
-      video:{ id:'tnsDa2WSRZM', title:'A Simple Drill To Practice Your Release', channel:'Golf Channel' }
+      video:{ id:'tnsDa2WSRZM', title:'A Simple Drill To Practice Your Release', channel:'Golf Channel' },
+      ballFlightNote:'Clubface angle at impact drives most of a shot\'s starting direction — a hold-off tends to leave the face open (a push or fade/slice tendency), while an early flip tends to close it (a pull or hook tendency). Directions mirror for left-handed golfers.',
+      mentalTip:'Feel like you\'re throwing the clubhead down the target line past impact, rather than "hitting at" the ball.',
+      equipment:['A bath towel tucked under both armpits','An impact bag or an old pillow to hit into']
     },
     {
       key:'finish',
@@ -1044,7 +1219,10 @@ function getFaultCatalog(c){
         free:'The hold-your-finish-for-3-seconds drill above — no equipment needed, just commit to the hold every rep.',
         purchase:'A balance/stability trainer (a wobble board or foam balance pad to practice finishing in balance).'
       },
-      video:{ id:'o0ODiWeU-X0', title:'The Best Follow Through Drill You Can Do', channel:'Free Online Golf Tips' }
+      video:{ id:'o0ODiWeU-X0', title:'The Best Follow Through Drill You Can Do', channel:'Free Online Golf Tips' },
+      ballFlightNote:'Decelerating into the ball tends to cost distance and makes the clubface harder to control at speed, since the swing is being stopped rather than swung through.',
+      mentalTip:'Give yourself full permission to swing to a finish, not at the ball — trust the finish will take care of itself.',
+      equipment:['Nothing required — a mirror helps you check the finish position','A balance pad or wobble board for extra feedback']
     },
     {
       key:'hipSway',
@@ -1058,7 +1236,10 @@ function getFaultCatalog(c){
         free:'The trail-foot wall drill above, using any wall, golf bag, or chair.',
         purchase:'An alignment stick planted just outside your trail hip as a physical sway barrier.'
       },
-      video:{ id:'6dN5cj_AB8I', title:'Hip Sway = Consistency Killer... Simple 1 Drill Fix', channel:'Free Online Golf Tips' }
+      video:{ id:'6dN5cj_AB8I', title:'Hip Sway = Consistency Killer... Simple 1 Drill Fix', channel:'Free Online Golf Tips' },
+      ballFlightNote:'Swaying instead of turning changes where your swing bottoms out relative to the ball, which commonly shows up as inconsistent contact and, depending on how the arms compensate, blocks or pulls.',
+      mentalTip:'Feel like you\'re turning inside a barrel — rotate around your spine rather than shifting away from the target.',
+      equipment:['A wall, golf bag, or chair to set your trail hip against','An alignment stick planted just outside your trail hip']
     },
     {
       key:'earlyExtension',
@@ -1072,7 +1253,10 @@ function getFaultCatalog(c){
         free:'The chair drill above, using any chair, bench, or golf bag behind you.',
         purchase:'A hip-hinge / posture trainer designed specifically for early extension.'
       },
-      video:{ id:'dVMCgqr82zk', title:'3 Drills To Fix Early Extension In Your Golf Swing', channel:'Free Online Golf Tips' }
+      video:{ id:'dVMCgqr82zk', title:'3 Drills To Fix Early Extension In Your Golf Swing', channel:'Free Online Golf Tips' },
+      ballFlightNote:'Standing up through impact crowds your arms and pushes the low point forward — a very common cause of shots that start blocked right of target or get caught thin off the toe (directions mirror for left-handed golfers).',
+      mentalTip:'Feel like your rear end stays back toward an imaginary wall through impact, rather than standing tall out of your posture.',
+      equipment:['A chair, bench, or golf bag lightly touching your rear end at setup','A mirror for side-view posture checks']
     }
   ];
 }
@@ -1157,40 +1341,50 @@ function buildBlueprint(){
 
   const summaryLine = `Tempo ran ${c.tempoRatio.toFixed(1)}:1 (back:down), hip-shoulder separation was about ${c.separation.toFixed(0)}°, head moved ${(c.headDrift*100).toFixed(0)}% of shoulder width from address to impact, and knee flex changed ${c.earlyExtension.toFixed(0)}° through the hitting zone.`;
 
-  let onDeckHtml = '';
+  const backswingObs = `Backswing: shoulders turned ${c.shoulderTurn.toFixed(0)}° against hips at ${c.hipTurn.toFixed(0)}°, about ${c.separation.toFixed(0)}° of separation; hand path ran roughly ${c.swingPlaneAngle.toFixed(0)}° from vertical.`;
+  const impactObs = `Impact: head moved ${(c.headDrift*100).toFixed(0)}% of shoulder width from address, and knee flex changed ${fmtDeg(c.earlyExtension)} through the hitting zone.`;
+  const forwardObs = `Forward swing: lead arm extension changed ${fmtDeg(c.releaseDelta)} just after impact, and shoulders rotated ${c.throughRotation.toFixed(0)}° into the finish.`;
+
+  const focusBullets = [`<li><b>${esc(primaryFault.label)}:</b> ${esc(primaryFault.diagnose)}</li>`];
   if(runnerUp && runnerUp.severity>0.1){
     const causal = getCausalNote(primaryFault, runnerUp);
-    onDeckHtml = `
-      <div class="blueprint-section">
-        <h3>On Deck</h3>
-        <p>Once ${esc(primaryFault.label)} settles, ${esc(runnerUp.label)} is next in line — not today's focus, but worth knowing about.${causal?` ${esc(causal)}`:''}</p>
-      </div>`;
+    focusBullets.push(`<li><b>${esc(runnerUp.label)}</b> (on deck): next in line once the main focus settles.${causal?` ${esc(causal)}`:''}</li>`);
   }
 
   blueprintEl.innerHTML = `
     <div class="blueprint-section">
-      <h3>Session Summary</h3>
+      <h3>Summary</h3>
       <p>${esc(summaryLine)}</p>
       <p>${esc(progressNote)}</p>
     </div>
     <div class="blueprint-section">
-      <h3>What We Observed</h3>
-      <p>${esc(primaryFault.diagnose)}</p>
+      <h3>Key Observations</h3>
+      <ul class="aid-list">
+        <li>${esc(backswingObs)}</li>
+        <li>${esc(impactObs)}</li>
+        <li>${esc(forwardObs)}</li>
+      </ul>
     </div>
     <div class="blueprint-section focus">
-      <h3>Start Here: ${esc(primaryFault.label)}</h3>
-      <p>${esc(primaryFault.why)}</p>
+      <h3>Areas of Focus</h3>
+      <ul class="aid-list">${focusBullets.join('')}</ul>
     </div>
     <div class="blueprint-section">
-      <h3>Your Drill: ${esc(primaryFault.drillName)}</h3>
-      <p>${esc(primaryFault.drill)}</p>
+      <h3>What This Likely Means For Ball Flight</h3>
+      <p>${esc(primaryFault.ballFlightNote)}</p>
+      <p class="video-note">Based on modern face/path ball-flight research — face angle at impact drives most of a shot's starting direction, and the face-to-path relationship drives the curve. We don't track the actual clubface here, so treat this as a likely tendency, not a measurement.</p>
     </div>
     <div class="blueprint-section">
-      <h3>Training Aids</h3>
+      <h3>Lesson Plan: ${esc(primaryFault.drillName)}</h3>
+      <p><b>On the range:</b> ${esc(primaryFault.drill)}</p>
+      <p><b>Off the course / mental side:</b> ${esc(primaryFault.mentalTip)}</p>
+    </div>
+    <div class="blueprint-section">
+      <h3>Recommended Training Aids</h3>
       <ul class="aid-list">
-        <li><b>Free:</b> ${esc(primaryFault.trainingAids.free)}</li>
-        <li><b>Worth buying:</b> ${esc(primaryFault.trainingAids.purchase)}</li>
+        ${primaryFault.equipment.map(e=>`<li>${esc(e)}</li>`).join('')}
       </ul>
+      <p class="video-note"><b>Free option:</b> ${esc(primaryFault.trainingAids.free)} &nbsp;·&nbsp; <b>Worth buying:</b> ${esc(primaryFault.trainingAids.purchase)}</p>
     </div>
     <div class="blueprint-section">
       <h3>Watch &amp; Learn (Free)</h3>
@@ -1203,7 +1397,6 @@ function buildBlueprint(){
       </a>
       <div class="video-note">Picked to match today's focus area — worth watching before your next range session.</div>
     </div>
-    ${onDeckHtml}
     <div class="blueprint-section closing">
       <p>Re-upload after a few practice sessions on this one thing — the read will pick up whether it's moved before suggesting anything new. Excited to see this swing again and build the next step of the plan together.</p>
     </div>`;
@@ -1211,11 +1404,13 @@ function buildBlueprint(){
   saveHistorySession({ date: new Date().toISOString(), key: primaryFault.key, label: primaryFault.label, severity: primaryFault.severity });
 
   lastReportText = `Swing Blueprint — ${new Date().toLocaleDateString()}\n\n`
-    + `Focus: ${primaryFault.label}\n\n`
-    + `${summaryLine}\n\n`
-    + `${primaryFault.diagnose}\n\n`
-    + `Drill: ${primaryFault.drillName} — ${primaryFault.drill}\n\n`
-    + `Watch: ${primaryFault.video.title} (${primaryFault.video.channel}) — https://www.youtube.com/watch?v=${primaryFault.video.id}`;
+    + `SUMMARY\n${summaryLine}\n\n`
+    + `KEY OBSERVATIONS\n- ${backswingObs}\n- ${impactObs}\n- ${forwardObs}\n\n`
+    + `AREAS OF FOCUS\n- ${primaryFault.label}: ${primaryFault.diagnose}\n\n`
+    + `BALL FLIGHT\n${primaryFault.ballFlightNote}\n\n`
+    + `LESSON PLAN — ${primaryFault.drillName}\nOn the range: ${primaryFault.drill}\nOff the course: ${primaryFault.mentalTip}\n\n`
+    + `TRAINING AIDS\n${primaryFault.equipment.map(e=>'- '+e).join('\n')}\n\n`
+    + `WATCH: ${primaryFault.video.title} (${primaryFault.video.channel}) — https://www.youtube.com/watch?v=${primaryFault.video.id}`;
   actionsEl.classList.remove('hidden');
 
   buildNarrationSegments();
@@ -1240,6 +1435,46 @@ async function shareBlueprint(){
   setTimeout(()=>noteEl.classList.add('hidden'), 4000);
 }
 document.getElementById('shareBtn').addEventListener('click', shareBlueprint);
+
+async function downloadBlueprintPdf(){
+  const btn = document.getElementById('downloadPdfBtn');
+  const original = btn.textContent;
+  btn.textContent = 'Preparing PDF…';
+  btn.disabled = true;
+  let wrap = null;
+  try{
+    const [html2canvasMod, jspdfMod] = await Promise.all([
+      import('https://cdn.jsdelivr.net/npm/html2canvas@1.4.1/+esm'),
+      import('https://cdn.jsdelivr.net/npm/jspdf@2.5.2/+esm')
+    ]);
+    const html2canvas = html2canvasMod.default;
+    const { jsPDF } = jspdfMod;
+
+    const source = document.getElementById('blueprintText');
+    wrap = document.createElement('div');
+    wrap.style.cssText = 'position:fixed;left:-9999px;top:0;width:800px;background:#F6F2E9;';
+    wrap.innerHTML = `
+      <div style="background:#152238;color:#F6F2E9;padding:24px 32px;border-bottom:4px solid #C6A15B;font-family:'Public Sans',sans-serif;">
+        <div style="font-family:'Frank Ruhl Libre',serif;font-size:1.7rem;font-weight:700;">Swing Blueprint</div>
+        <div style="font-size:0.85rem;color:#E4C378;margin-top:4px;">Visual Analysis Summary &amp; Lesson Plan — ${new Date().toLocaleDateString()}</div>
+      </div>
+      <div style="padding:28px 32px;">${source.innerHTML}</div>`;
+    document.body.appendChild(wrap);
+
+    const canvas = await html2canvas(wrap, { backgroundColor:'#F6F2E9', scale:2, windowWidth:800 });
+    const pdf = new jsPDF({ unit:'px', format:[canvas.width, canvas.height] });
+    pdf.addImage(canvas.toDataURL('image/png'), 'PNG', 0, 0, canvas.width, canvas.height);
+    pdf.save('swing-blueprint.pdf');
+  }catch(e){
+    console.error('PDF export failed', e);
+    alert('Could not generate the PDF — check your connection and try again.');
+  }finally{
+    if(wrap && wrap.parentNode) wrap.parentNode.removeChild(wrap);
+    btn.textContent = original;
+    btn.disabled = false;
+  }
+}
+document.getElementById('downloadPdfBtn').addEventListener('click', downloadBlueprintPdf);
 
 let narrationSegments = [];
 
@@ -1271,6 +1506,26 @@ function buildNarrationSegments(){
 
 let narrationPlaying = false;
 
+let cachedBestVoice = null;
+function pickBestVoice(){
+  if(!('speechSynthesis' in window)) return null;
+  const voices = speechSynthesis.getVoices();
+  if(!voices.length) return null;
+  // Prefer higher-quality system voices when the browser exposes them (these
+  // markers show up on Chrome/Edge/Safari's better English voices). Full
+  // human-quality narration would need a paid neural TTS service — this just
+  // picks the best of what's already free and built into the browser.
+  const qualityMarkers = ['Natural','Neural','Premium','Enhanced'];
+  const english = voices.filter(v=>v.lang && v.lang.startsWith('en'));
+  const pool = english.length ? english : voices;
+  const best = pool.find(v=>qualityMarkers.some(m=>v.name.includes(m)));
+  return best || pool[0] || voices[0];
+}
+if('speechSynthesis' in window){
+  speechSynthesis.onvoiceschanged = ()=>{ cachedBestVoice = pickBestVoice(); };
+  cachedBestVoice = pickBestVoice();
+}
+
 function playNarration(){
   if(!('speechSynthesis' in window)){
     alert('Voice narration is not supported in this browser.');
@@ -1295,6 +1550,8 @@ function playNarration(){
     document.getElementById('narrationCaption').textContent = seg.text;
     const utter = new SpeechSynthesisUtterance(seg.text);
     utter.rate = 1.0;
+    if(!cachedBestVoice) cachedBestVoice = pickBestVoice();
+    if(cachedBestVoice) utter.voice = cachedBestVoice;
     utter.onend = ()=>{ i++; if(narrationPlaying) speakNext(); };
     utter.onerror = ()=>{ i++; if(narrationPlaying) speakNext(); };
     speechSynthesis.speak(utter);
