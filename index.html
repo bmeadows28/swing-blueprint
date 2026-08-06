@@ -1330,21 +1330,19 @@ function buildBlueprint(){
   const blueprintEl = document.getElementById('blueprintText');
   const actionsEl = document.getElementById('blueprintActions');
 
-  const implausible = c.headDrift>1.0 || c.stanceRatio>2.2 || c.stanceRatio<0.4 ||
+  // Numbers this far outside plausible range usually mean the clip had extra
+  // footage before/after the swing, or was slow motion. That's worth a clear
+  // warning, but it shouldn't block the whole read — the checkpoint detection
+  // is independent of these thresholds and can still be broadly useful, and
+  // losing the entire section (plus narration) is a worse outcome than a
+  // flagged, lower-confidence one.
+  const lowConfidence = c.headDrift>1.0 || c.stanceRatio>2.2 || c.stanceRatio<0.4 ||
                        c.tempoRatio>7 || c.tempoRatio<0.7 || Math.abs(c.spineChange)>60;
-  if(implausible){
-    blueprintEl.innerHTML = `
-      <div class="blueprint-section">
-        <h3>These numbers look off</h3>
-        <p>That's worth flagging rather than presenting as real advice.</p>
-        <p>This almost always means the clip had extra footage before or after the actual swing (standing around, walking, camera settling), or was recorded in slow motion — both throw off automatic position detection since it assumes frame one is address and the fastest motion in the clip is impact.</p>
-        <p>Trim to just the swing at normal speed, 2-6 seconds, and re-upload before treating anything below as real guidance.</p>
-      </div>`;
-    actionsEl.classList.add('hidden');
-    primaryFault = null;
-    narrationSegments = [];
-    return;
-  }
+  const lowConfidenceBanner = lowConfidence ? `
+    <div class="blueprint-section focus">
+      <h3>Take this read with caution</h3>
+      <p>A couple of numbers from this clip look further outside a plausible range than usual — often because the clip had extra footage before or after the swing (standing around, walking, camera settling), or was recorded in slow motion. The checkpoints and read below are still our best attempt, but double-check them against the video before treating them as certain, and consider trimming tighter to just the swing at normal speed (2-6 seconds) for a cleaner read next time.</p>
+    </div>` : '';
 
   loadHistory();
   const catalog = getFaultCatalog(c);
@@ -1381,6 +1379,7 @@ function buildBlueprint(){
   }
 
   blueprintEl.innerHTML = `
+    ${lowConfidenceBanner}
     <div class="blueprint-section">
       <h3>Summary</h3>
       <p>${esc(summaryLine)}</p>
