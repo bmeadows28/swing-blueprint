@@ -496,7 +496,13 @@
 <script type="module">
 import { PoseLandmarker, FilesetResolver, DrawingUtils } from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14";
 
-const MODEL_URL = "https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/1/pose_landmarker_lite.task";
+// "full" instead of "lite" — the swing's fast segments (backswing/downswing/
+// impact) carry motion blur, and the lite model was failing to detect a pose
+// on enough of those frames to leave the checkpoint algorithms with real data
+// only at address and the slower follow-through/finish. Full is slower per
+// frame but meaningfully more accurate on harder frames, and the sequential
+// playback capture (no more seeking) gives enough headroom to afford it.
+const MODEL_URL = "https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_full/float16/1/pose_landmarker_full.task";
 
 const L = {
   nose:0, lShoulder:11, rShoulder:12, lElbow:13, rElbow:14,
@@ -561,7 +567,10 @@ async function initModel(){
   poseLandmarker = await PoseLandmarker.createFromOptions(vision, {
     baseOptions:{ modelAssetPath: MODEL_URL, delegate:"GPU" },
     runningMode:"VIDEO",
-    numPoses:1
+    numPoses:1,
+    minPoseDetectionConfidence:0.3,
+    minPosePresenceConfidence:0.3,
+    minTrackingConfidence:0.3
   });
   setStatus('Model ready — pick a video', 100);
   setTimeout(()=>statusLine.classList.add('hidden'), 800);
@@ -575,7 +584,10 @@ initModel().catch(async (e)=>{
     poseLandmarker = await PoseLandmarker.createFromOptions(vision, {
       baseOptions:{ modelAssetPath: MODEL_URL, delegate:"CPU" },
       runningMode:"VIDEO",
-      numPoses:1
+      numPoses:1,
+      minPoseDetectionConfidence:0.3,
+      minPosePresenceConfidence:0.3,
+      minTrackingConfidence:0.3
     });
     setStatus('Model ready — pick a video', 100);
     setTimeout(()=>statusLine.classList.add('hidden'), 800);
@@ -764,6 +776,23 @@ async function startProcessing(url){
 
   if(frames.length < 6){
     setStatus('Could not track enough of the swing — try a clip with the full body visible, good light, and a still camera.', 0);
+    return;
+  }
+
+  // A single large gap in frame coverage usually means tracking was lost
+  // through the fast part of the swing (motion blur on the backswing,
+  // downswing, or impact) while address and the slower finish still tracked
+  // fine. That produces checkpoints that all collapse toward whichever end
+  // still has real data, which is worse than an honest failure — better to
+  // say so than hand back a confident-looking but broken read.
+  frames.sort((a,b)=>a.t-b.t);
+  const totalSpan = frames[frames.length-1].t - frames[0].t;
+  let largestGap = 0;
+  for(let i=1;i<frames.length;i++){
+    largestGap = Math.max(largestGap, frames[i].t - frames[i-1].t);
+  }
+  if(totalSpan>0 && largestGap/totalSpan > 0.35){
+    setStatus('Lost tracking through part of the swing — the fast portion (backswing/downswing) likely blurred out. Try filming in brighter light, or lock a faster shutter speed if your camera app allows it, and re-upload.', 0);
     return;
   }
 
