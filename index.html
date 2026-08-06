@@ -838,21 +838,21 @@ function detectKeyframes(){
     speeds.push(Math.hypot(b.x-a.x,b.y-a.y)/dt);
   }
 
-  // Impact: picking the single fastest interval tends to land on its END, which —
-  // with sparse sampling — is often already deceleration into the follow-through
-  // (hands back up near hip height) rather than the ball. Instead, score frames
-  // after the top by how fast the hands are moving AND how close their height is
-  // back to address (roughly ball height), since impact is where both are true
-  // at once.
-  const addressY = wy[0];
-  let maxSpeedAfterTop = 0;
-  for(let i=topI+1;i<n;i++) maxSpeedAfterTop = Math.max(maxSpeedAfterTop, speeds[i]);
-  let impactI = Math.min(topI+1, n-1), bestScore = -Infinity;
-  for(let i=topI+1;i<n;i++){
-    const speedNorm = maxSpeedAfterTop>0 ? speeds[i]/maxSpeedAfterTop : 0;
-    const heightDiff = Math.abs(wy[i]-addressY);
-    const score = speedNorm - heightDiff*3;
-    if(score > bestScore){ bestScore = score; impactI = i; }
+  // Impact: club/hand speed peaks essentially at the moment of impact — with
+  // dense, sequentially-captured frames (no more sparse seek-based sampling),
+  // the true fastest LOCAL peak after the top is a reliable, direct proxy.
+  // Require both neighbors to be slower so a single noisy/jittery frame can't
+  // be mistaken for it; fall back to the single fastest frame if no clean
+  // local peak exists (e.g. very few frames after the top).
+  let impactI = Math.min(topI+1, n-1), bestSpeed = -1;
+  for(let i=topI+1;i<n-1;i++){
+    const isLocalPeak = speeds[i]>=speeds[i-1] && speeds[i]>=speeds[i+1];
+    if(isLocalPeak && speeds[i] > bestSpeed){ bestSpeed = speeds[i]; impactI = i; }
+  }
+  if(bestSpeed < 0){
+    for(let i=topI+1;i<n;i++){
+      if(speeds[i] > bestSpeed){ bestSpeed = speeds[i]; impactI = i; }
+    }
   }
 
   const addressI = 0;
@@ -862,34 +862,34 @@ function detectKeyframes(){
 
   // Three "hip-high" checkpoints — hands roughly hip height on the way back,
   // hip height again coming into the hitting zone, and hip height just after
-  // release. Estimated as a fraction of the vertical travel between the
-  // nearest low point (address/impact) and the nearest high point (top), since
-  // hip height sits noticeably closer to address/impact than to the top of
-  // the swing for most golfers.
-  const HIP_HIGH_FRAC = 0.35;
-  function findClosestByHeight(startI, endI, targetY){
-    let best = startI, bestDiff = Infinity;
+  // release. Anchoring to the golfer's actual hip landmark height sounds
+  // right but degenerates in practice: wrist height at address (and at
+  // impact) is already close to hip height by definition — that's the setup
+  // position — so "closest match to hip height" within address-to-top just
+  // collapses to the first frame after address instead of landing partway
+  // through. Using the FRACTION OF ARC LENGTH traveled (actual hand-path
+  // distance, not height) avoids that: it's strictly increasing from the
+  // start of each segment, so it can't collapse onto a boundary, and it
+  // isn't thrown off by a swing's rise/fall being front- or back-loaded the
+  // way a pure height-fraction was.
+  function findByArcFraction(startI, endI, frac){
     const lo = Math.min(startI,endI), hi = Math.max(startI,endI);
-    for(let i=lo+1;i<hi;i++){
-      const diff = Math.abs(wy[i]-targetY);
-      if(diff < bestDiff){ bestDiff = diff; best = i; }
+    if(hi<=lo+1) return startI;
+    const dists = [0];
+    for(let i=lo+1;i<=hi;i++){
+      dists.push(dists[dists.length-1] + dist(wristPt(frames[i-1].lm), wristPt(frames[i].lm)));
     }
-    return best;
+    const target = dists[dists.length-1]*frac;
+    let bestK = 1, bestDiff = Infinity;
+    for(let k=1;k<dists.length-1;k++){
+      const diff = Math.abs(dists[k]-target);
+      if(diff < bestDiff){ bestDiff = diff; bestK = k; }
+    }
+    return lo+bestK;
   }
-  const backHipHighTarget = wy[addressI] + HIP_HIGH_FRAC*(wy[topClamped]-wy[addressI]);
-  const backHipHighI = topClamped > addressI+1
-    ? findClosestByHeight(addressI, topClamped, backHipHighTarget)
-    : addressI;
-
-  const downHipHighTarget = wy[impactClamped] + HIP_HIGH_FRAC*(wy[topClamped]-wy[impactClamped]);
-  const downHipHighI = impactClamped > topClamped+1
-    ? findClosestByHeight(topClamped, impactClamped, downHipHighTarget)
-    : topClamped;
-
-  const throughHipHighTarget = wy[impactClamped] + HIP_HIGH_FRAC*(wy[finishI]-wy[impactClamped]);
-  const throughHipHighI = finishI > impactClamped+1
-    ? findClosestByHeight(impactClamped, finishI, throughHipHighTarget)
-    : impactClamped;
+  const backHipHighI = findByArcFraction(addressI, topClamped, 0.35);
+  const downHipHighI = findByArcFraction(topClamped, impactClamped, 0.6);
+  const throughHipHighI = findByArcFraction(impactClamped, finishI, 0.35);
 
   keyIdx = {
     address:addressI,
