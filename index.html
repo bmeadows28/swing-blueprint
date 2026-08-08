@@ -849,21 +849,32 @@ function detectKeyframes(){
     speeds.push(Math.hypot(b.x-a.x,b.y-a.y)/dt);
   }
 
-  // Impact: club/hand speed peaks essentially at the moment of impact — with
-  // dense, sequentially-captured frames (no more sparse seek-based sampling),
-  // the true fastest LOCAL peak after the top is a reliable, direct proxy.
-  // Require both neighbors to be slower so a single noisy/jittery frame can't
-  // be mistaken for it; fall back to the single fastest frame if no clean
-  // local peak exists (e.g. very few frames after the top).
-  let impactI = Math.min(topI+1, n-1), bestSpeed = -1;
+  // Impact: club/hand speed peaks essentially at the moment of impact, which
+  // gets us to the right neighborhood — but the exact peak-speed frame can
+  // land a touch early or late. Refine within a small window around it by
+  // picking whichever frame's hand position (not just height — full reach)
+  // is closest to address, since hands return close to where they started
+  // right at the ball. Require both neighbors to be slower when finding the
+  // peak so a single noisy/jittery frame can't be mistaken for it; fall back
+  // to the single fastest frame if no clean local peak exists.
+  let speedPeakI = Math.min(topI+1, n-1), bestSpeed = -1;
   for(let i=topI+1;i<n-1;i++){
     const isLocalPeak = speeds[i]>=speeds[i-1] && speeds[i]>=speeds[i+1];
-    if(isLocalPeak && speeds[i] > bestSpeed){ bestSpeed = speeds[i]; impactI = i; }
+    if(isLocalPeak && speeds[i] > bestSpeed){ bestSpeed = speeds[i]; speedPeakI = i; }
   }
   if(bestSpeed < 0){
     for(let i=topI+1;i<n;i++){
-      if(speeds[i] > bestSpeed){ bestSpeed = speeds[i]; impactI = i; }
+      if(speeds[i] > bestSpeed){ bestSpeed = speeds[i]; speedPeakI = i; }
     }
+  }
+  const addressWrist = wristPt(frames[0].lm);
+  const IMPACT_REFINE_WINDOW = 3;
+  let impactI = speedPeakI, bestPosDiff = Infinity;
+  const refineLo = Math.max(topI+1, speedPeakI-IMPACT_REFINE_WINDOW);
+  const refineHi = Math.min(n-1, speedPeakI+IMPACT_REFINE_WINDOW);
+  for(let i=refineLo;i<=refineHi;i++){
+    const diff = dist(wristPt(frames[i].lm), addressWrist);
+    if(diff < bestPosDiff){ bestPosDiff = diff; impactI = i; }
   }
 
   const addressI = 0;
@@ -899,7 +910,7 @@ function detectKeyframes(){
     return lo+bestK;
   }
   const backHipHighI = findByArcFraction(addressI, topClamped, 0.35);
-  const downHipHighI = findByArcFraction(topClamped, impactClamped, 0.6);
+  const downHipHighI = findByArcFraction(topClamped, impactClamped, 0.72);
   const throughHipHighI = findByArcFraction(impactClamped, finishI, 0.35);
 
   keyIdx = {
