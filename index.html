@@ -820,15 +820,26 @@ function detectKeyframes(){
   const n = frames.length;
   const wy = frames.map(f=>wristPt(f.lm).y);
 
-  // Use a time-based cutoff (not an index-based one) for the "top" search window —
-  // the refine pass packs extra samples into the transition/impact window, so a
-  // fixed fraction of the frame COUNT no longer lines up with a fixed fraction of
-  // the clip's DURATION once coarse and refined samples are merged.
-  const totalT = (frames[n-1].t - frames[0].t) || 1;
-  const topCutoffT = frames[0].t + totalT*0.75;
-  let topI = 0, topVal = Infinity;
-  for(let i=0;i<n && frames[i].t<=topCutoffT;i++){
-    if(wy[i] < topVal){ topVal = wy[i]; topI = i; }
+  // Top of backswing: the FIRST confirmed local minimum of wrist height —
+  // a genuine turning point (hands rising, then reversing to fall) — not the
+  // global minimum within an arbitrary time window. A short clip with a fast
+  // swing followed by a long static finish hold (very plausible for a ~2s
+  // clip) can easily have the held finish position — hands up high — sit
+  // higher than the true top and still fall inside a time-based cutoff,
+  // hijacking "top" into showing the follow-through instead. Stopping at the
+  // first clear reversal makes this immune to whatever happens later in the
+  // clip. Require a few consecutive frames of clear rise (past a small noise
+  // tolerance) before confirming the reversal, so landmark jitter during the
+  // backswing's climb can't trigger a false-early stop.
+  let topI = 0, topVal = wy[0], sinceMin = 0;
+  const TOP_CONFIRM_FRAMES = 3, TOP_RISE_EPS = 0.015;
+  for(let i=1;i<n;i++){
+    if(wy[i] < topVal - TOP_RISE_EPS*0.2){
+      topVal = wy[i]; topI = i; sinceMin = 0;
+    } else if(wy[i] > topVal + TOP_RISE_EPS){
+      sinceMin++;
+      if(sinceMin >= TOP_CONFIRM_FRAMES) break;
+    }
   }
 
   let speeds = [0];
