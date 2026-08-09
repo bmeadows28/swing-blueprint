@@ -860,17 +860,21 @@ function detectKeyframes(){
     if(wy[i] < topVal){ topVal = wy[i]; topI = i; }
   }
 
-  // Impact: the lowest point the hands reach during the downswing/follow-
-  // through — the bottom of the swing arc, right around where the club
-  // meets the ball. Rather than inferring it indirectly from speed (motion
-  // blur right at impact can distort frame-to-frame speed readings), use
-  // the hand height itself directly: the global maximum wrist Y (lowest
-  // hand position, since Y increases downward) after the top. The hands
-  // reliably rise back up through release and the finish afterward, so
-  // this can't be hijacked by a later held finish position.
-  let impactI = topI+1, impactVal = wy[Math.min(topI+1,n-1)];
+  // Impact: at the moment the club meets the ball, the hands return to
+  // essentially the same spot they started at address — that's a more
+  // direct signal than the lowest point of the hand path, since the swing
+  // arc's actual low point doesn't always land exactly at the same height
+  // as address (setup dynamics, camera angle, a slightly descending vs.
+  // sweeping strike all shift it). So find whichever frame's hand position
+  // (full 2D — both reach and height) is closest to address, searched
+  // across the whole post-top range. Hands moving up and away through
+  // release and the finish afterward means nothing later in the clip can
+  // coincidentally sit closer to address than the real impact frame does.
+  const addressWrist = wristPt(frames[0].lm);
+  let impactI = topI+1, bestPosDiff = Infinity;
   for(let i=topI+1;i<n;i++){
-    if(wy[i] > impactVal){ impactVal = wy[i]; impactI = i; }
+    const diff = dist(wristPt(frames[i].lm), addressWrist);
+    if(diff < bestPosDiff){ bestPosDiff = diff; impactI = i; }
   }
 
   const addressI = 0;
