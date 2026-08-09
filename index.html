@@ -1106,7 +1106,7 @@ function describeCheckpoint(key){
       title:'Top of Swing', sub:'Rotation, Hands & Height',
       bullets:[
         `Head: ${headSeverity} shift ${axisH}, about ${fmtPct(hMag)} of shoulder width from address.`,
-        `Hands/clubface (body proxy): rotated about ${fmtDeg(d.handRotation)} from address.`,
+        `Hands/wrist condition (body proxy): rotated about ${fmtDeg(d.handRotation)} from address — a rough read on how flat, cupped, or bowed the wrist is holding here; true wrist angle needs hand-landmark tracking we don't have yet.`,
         `Rotation: shoulders ${c.shoulderTurn.toFixed(0)}°, hips ${c.hipTurn.toFixed(0)}° — about ${c.separation.toFixed(0)}° of separation.`,
         `Swing plane (hand-path estimate): about ${c.swingPlaneAngle.toFixed(0)}° from vertical.`,
         `Lower body: knee flex changed ${fmtDeg(d.lowerBodyChange)} from address.`
@@ -1150,7 +1150,7 @@ function describeCheckpoint(key){
   }[key];
   const bullets = [
     `Head: ${headSeverity} shift ${axisH}, about ${fmtPct(hMag)} of shoulder width from address.`,
-    `Hands/clubface (body proxy): rotated about ${fmtDeg(d.handRotation)} from address.`,
+    `Hands/wrist condition (body proxy): rotated about ${fmtDeg(d.handRotation)} from address — a rough read on how flat, cupped, or bowed the wrist is holding here; true wrist angle needs hand-landmark tracking we don't have yet.`,
     `Rotation: shoulders ${d.shoulderRot.toFixed(0)}°, hips ${d.hipRot.toFixed(0)}° from address.`,
     `Swing plane: hands are about ${fmtPct(Math.abs(d.planeOffset))} of shoulder width from the address plane line — check the video overlay for whether that's above (steeper) or below (shallower) it.`
   ];
@@ -1789,8 +1789,7 @@ function drawCheckpointOverlay(ctx, lm, checkpointKey, idx, w, h){
     case 'top':
       drawTeachingLine(ctx, lHip, rHip, '#E4C378', 'Hips', w, h, 0.3);
       drawTeachingLine(ctx, lSh, rSh, '#C6A15B', 'Shoulders', w, h, 0.3);
-      drawHandMarker(ctx, lm, w, h, 'Hands');
-      drawHeadMarker(ctx, lm, w, h);
+      drawAddressPlaneLine(ctx, w, h, '#8fd6c9', 'Swing Plane (address)');
       break;
     case 'downHipHigh':
       drawTeachingLine(ctx, lHip, rHip, '#E4C378', 'Hips', w, h, 0.3);
