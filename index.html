@@ -877,10 +877,26 @@ function detectKeyframes(){
     if(diff < bestPosDiff){ bestPosDiff = diff; impactI = i; }
   }
 
+  // The Release checkpoint (hip-high on the way through) is timed off the
+  // bottom of the swing arc, not off the Impact frame above — Impact now
+  // matches address position (the moment the club meets the ball), which
+  // can land a touch earlier than the hands' actual lowest point (their
+  // extension can keep carrying them down a beat after the strike). Using
+  // the new, earlier Impact frame as Release's start boundary was quietly
+  // dragging Release earlier too, even though nothing about Release itself
+  // was wrong. Anchoring Release to the swing's true low point instead
+  // (independent of exactly where Impact lands) keeps Release where it was
+  // before Impact's detection changed.
+  let swingLowI = topI+1, swingLowVal = wy[Math.min(topI+1,n-1)];
+  for(let i=topI+1;i<n;i++){
+    if(wy[i] > swingLowVal){ swingLowVal = wy[i]; swingLowI = i; }
+  }
+
   const addressI = 0;
   const finishI = n-1;
   const topClamped = Math.max(topI,1);
   const impactClamped = Math.max(impactI,topI+1);
+  const releaseAnchorI = Math.max(swingLowI, impactClamped);
 
   // Three "hip-high" checkpoints — hands roughly hip height on the way back,
   // hip height again coming into the hitting zone, and hip height just after
@@ -911,7 +927,7 @@ function detectKeyframes(){
   }
   const backHipHighI = findByArcFraction(addressI, topClamped, 0.28);
   const downHipHighI = findByArcFraction(topClamped, impactClamped, 0.78);
-  const throughHipHighI = findByArcFraction(impactClamped, finishI, 0.35);
+  const throughHipHighI = Math.max(findByArcFraction(releaseAnchorI, finishI, 0.35), impactClamped+1);
 
   keyIdx = {
     address:addressI,
