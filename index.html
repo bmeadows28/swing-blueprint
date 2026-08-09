@@ -505,8 +505,11 @@ import { PoseLandmarker, FilesetResolver, DrawingUtils } from "https://cdn.jsdel
 const MODEL_URL = "https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_full/float16/1/pose_landmarker_full.task";
 
 const L = {
-  nose:0, lShoulder:11, rShoulder:12, lElbow:13, rElbow:14,
-  lWrist:15, rWrist:16, lHip:23, rHip:24, lKnee:25, rKnee:26, lAnkle:27, rAnkle:28
+  nose:0, lEye:2, rEye:5, lEar:7, rEar:8,
+  lShoulder:11, rShoulder:12, lElbow:13, rElbow:14,
+  lWrist:15, rWrist:16, lPinky:17, rPinky:18, lIndex:19, rIndex:20, lThumb:21, rThumb:22,
+  lHip:23, rHip:24, lKnee:25, rKnee:26, lAnkle:27, rAnkle:28,
+  lHeel:29, rHeel:30, lFootIndex:31, rFootIndex:32
 };
 
 const CHECKPOINT_KEYS = ['address','backHipHigh','top','downHipHigh','impact','throughHipHigh','finish'];
@@ -960,6 +963,19 @@ function elbowAngleAt(f, side){
   const a1 = angleDeg(el, sh), a2 = angleDeg(el, wr);
   return Math.abs(a1-a2);
 }
+// A genuine wrist-joint angle (forearm-to-hand), using the index-finger
+// landmark as the "hand" direction — this is what BlazePose actually gives
+// us for the hand, not a dedicated hand/finger model, so treat it as a
+// rougher read than the elbow/knee angles above, but it's a real joint
+// angle now rather than the cross-body wrist-to-wrist line rotation this
+// used to rely on.
+function wristAngleAt(f, side){
+  const el = f[side==='l'?L.lElbow:L.rElbow];
+  const wr = f[side==='l'?L.lWrist:L.rWrist];
+  const idx = f[side==='l'?L.lIndex:L.rIndex];
+  const a1 = angleDeg(wr, el), a2 = angleDeg(wr, idx);
+  return Math.abs(a1-a2);
+}
 function angleFromVerticalDeg(p1,p2){
   const dx = Math.abs(p2.x-p1.x), dy = Math.abs(p2.y-p1.y);
   return Math.atan2(dx, dy) * 180/Math.PI;
@@ -1016,6 +1032,20 @@ function buildMetrics(){
   const stanceWidth = dist(fA[L.lAnkle], fA[L.rAnkle]);
   const stanceRatio = stanceWidth / (shoulderWidthA||1);
 
+  // Foot flare: how many degrees each foot's heel-to-toe line points away
+  // from square to the stance line, at address.
+  const stanceLineAngle = angleDeg(fA[L.lAnkle], fA[L.rAnkle]);
+  function footFlareAt(f, side){
+    const heel = f[side==='l'?L.lHeel:L.rHeel];
+    const toe = f[side==='l'?L.lFootIndex:L.rFootIndex];
+    let diff = angleDeg(heel, toe) - stanceLineAngle - 90;
+    while(diff>90) diff -= 180;
+    while(diff<-90) diff += 180;
+    return diff;
+  }
+  const leadFootFlare = footFlareAt(fA,'l');
+  const trailFootFlare = footFlareAt(fA,'r');
+
   const hipMidA = mid(fA[L.lHip], fA[L.rHip]);
   const hipMidT = mid(fT[L.lHip], fT[L.rHip]);
   const hipSway = Math.abs(hipMidT.x - hipMidA.x) / (stanceWidth||1);
@@ -1039,7 +1069,8 @@ function buildMetrics(){
     tempoRatio, backT, downT, separation, shoulderTurn, hipTurn,
     headDrift, spineChange, stanceRatio,
     releaseDelta, throughRotation,
-    hipSway, earlyExtension, swingPlaneAngle
+    hipSway, earlyExtension, swingPlaneAngle,
+    leadFootFlare, trailFootFlare
   };
 
   checkpointData = computeCheckpointData();
@@ -1052,12 +1083,15 @@ function buildMetrics(){
 function computeCheckpointData(){
   const addressLm = frames[keyIdx.address].lm;
   const addressShoulderW = dist(addressLm[L.lShoulder], addressLm[L.rShoulder]) || 1;
-  const addressHandAngle = angleDeg(addressLm[L.lWrist], addressLm[L.rWrist]);
   const addressShoulderAngle = angleDeg(addressLm[L.lShoulder], addressLm[L.rShoulder]);
   const addressHipAngle = angleDeg(addressLm[L.lHip], addressLm[L.rHip]);
   const addressKneeFlex = (kneeAngleAt(addressLm,'l') + kneeAngleAt(addressLm,'r')) / 2;
   const stanceWidth = dist(addressLm[L.lAnkle], addressLm[L.rAnkle]) || 1;
   const { p0: planeP0, p1: planeP1 } = addressPlanePoints();
+  const addressWristAngle = wristAngleAt(addressLm,'l');
+  const addressEarTilt = angleDeg(addressLm[L.lEar], addressLm[L.rEar]);
+  const addressEyeWidth = dist(addressLm[L.lEye], addressLm[L.rEye]) || 1;
+  const addressHeelY = { l: addressLm[L.lHeel].y, r: addressLm[L.rHeel].y };
 
   const data = {};
   for(const key of CHECKPOINT_KEYS){
@@ -1066,10 +1100,6 @@ function computeCheckpointData(){
 
     const headDX = (lm[L.nose].x - addressLm[L.nose].x) / addressShoulderW;
     const headDY = (lm[L.nose].y - addressLm[L.nose].y) / addressShoulderW;
-
-    let handRotation = angleDeg(lm[L.lWrist], lm[L.rWrist]) - addressHandAngle;
-    while(handRotation>180) handRotation -= 360;
-    while(handRotation<-180) handRotation += 360;
 
     const shoulderRot = Math.abs(angleDeg(lm[L.lShoulder], lm[L.rShoulder]) - addressShoulderAngle);
     const hipRot = Math.abs(angleDeg(lm[L.lHip], lm[L.rHip]) - addressHipAngle);
@@ -1084,7 +1114,19 @@ function computeCheckpointData(){
     const stanceMidX = (lm[L.lAnkle].x + lm[L.rAnkle].x) / 2;
     const balanceOffset = (hipMidX - stanceMidX) / stanceWidth;
 
-    data[key] = { headDX, headDY, handRotation, shoulderRot, hipRot, kneeFlex, lowerBodyChange, planeOffset, handDist, balanceOffset };
+    const wristAngleChange = wristAngleAt(lm,'l') - addressWristAngle;
+
+    let earTiltChange = angleDeg(lm[L.lEar], lm[L.rEar]) - addressEarTilt;
+    while(earTiltChange>90) earTiltChange -= 180;
+    while(earTiltChange<-90) earTiltChange += 180;
+
+    const eyeWidthRatio = dist(lm[L.lEye], lm[L.rEye]) / addressEyeWidth;
+
+    const lHeelLift = (addressHeelY.l - lm[L.lHeel].y) / addressShoulderW;
+    const rHeelLift = (addressHeelY.r - lm[L.rHeel].y) / addressShoulderW;
+    const heelLift = Math.max(lHeelLift, rHeelLift);
+
+    data[key] = { headDX, headDY, shoulderRot, hipRot, kneeFlex, lowerBodyChange, planeOffset, handDist, balanceOffset, wristAngleChange, earTiltChange, eyeWidthRatio, heelLift };
   }
   return data;
 }
@@ -1112,7 +1154,8 @@ function describeCheckpoint(key){
         `Stance: ${c.stanceRatio.toFixed(2)}× shoulder width — ${c.stanceRatio<0.9?'narrow':c.stanceRatio>1.3?'wide':'a common width'} for a full swing.`,
         `Posture (spine angle): tilted about ${spineAngleAt(frames[keyIdx.address].lm).toFixed(0)}° from vertical at setup.`,
         `Balance: weight looks ${balance}.`,
-        `Hands: sitting about ${d.handDist.toFixed(2)}× shoulder width from your body.`
+        `Hands: sitting about ${d.handDist.toFixed(2)}× shoulder width from your body.`,
+        `Feet: lead foot sits about ${Math.abs(c.leadFootFlare).toFixed(0)}° from square to your stance line, trail foot about ${Math.abs(c.trailFootFlare).toFixed(0)}° — some flare is normal, especially on the lead foot for a fuller turn.`
       ],
       recommendation: c.stanceRatio<0.85 ? 'Widen your stance slightly for a more stable base to turn against.'
         : c.stanceRatio>1.4 ? 'Narrow your stance a touch — too wide can limit hip turn.'
@@ -1125,7 +1168,7 @@ function describeCheckpoint(key){
       title:'Top of Swing', sub:'Rotation, Hands & Height',
       bullets:[
         `Head: ${headSeverity} shift ${axisH}, about ${fmtPct(hMag)} of shoulder width from address.`,
-        `Hands/wrist condition (body proxy): rotated about ${fmtDeg(d.handRotation)} from address — a rough read on how flat, cupped, or bowed the wrist is holding here; true wrist angle needs hand-landmark tracking we don't have yet.`,
+        `Hands/wrist condition: lead wrist angle changed about ${fmtDeg(d.wristAngleChange)} from address — a 2D read from the hand landmark, not a lab measurement, but a real joint angle rather than a cross-body line estimate.`,
         `Rotation: shoulders ${c.shoulderTurn.toFixed(0)}°, hips ${c.hipTurn.toFixed(0)}° — about ${c.separation.toFixed(0)}° of separation.`,
         `Swing plane (hand-path estimate): about ${c.swingPlaneAngle.toFixed(0)}° from vertical.`,
         `Lower body: knee flex changed ${fmtDeg(d.lowerBodyChange)} from address.`
@@ -1138,8 +1181,9 @@ function describeCheckpoint(key){
       title:'Impact', sub:'Rotation, Plane, Height & Hands',
       bullets:[
         `Head: ${headSeverity} shift ${axisH}, about ${fmtPct(hMag)} of shoulder width from address.`,
-        `Hands/clubface (body proxy): rotated about ${fmtDeg(d.handRotation)} from address.`,
+        `Hands/wrist condition: lead wrist angle changed about ${fmtDeg(d.wristAngleChange)} from address.`,
         `Rotation: shoulders and hips have returned close to square to address.`,
+        `Head tilt (face-on read): changed about ${fmtDeg(d.earTiltChange)} from address.`,
         `Swing plane: hands are about ${fmtPct(Math.abs(d.planeOffset))} of shoulder width from the address plane line — check the video overlay for whether that's above (steeper) or below (shallower) it.`,
         `Lower body: knee flex changed ${fmtDeg(c.earlyExtension)} from address — ${c.earlyExtension<8?'held well':'standing up out of posture'}.`
       ],
@@ -1150,12 +1194,19 @@ function describeCheckpoint(key){
   }
   if(key==='finish'){
     const balance = Math.abs(d.balanceOffset)<0.15 ? 'balanced over your lead side' : 'still working toward a fully balanced lead-side finish';
+    const impactTurn = Math.max(0, 1-checkpointData.impact.eyeWidthRatio);
+    const finishTurn = Math.max(0, 1-d.eyeWidthRatio);
+    const eyesRead = impactTurn < finishTurn*0.5
+      ? 'a good sign your eyes stayed down through the ball before releasing to the target'
+      : 'worth checking on video whether your eyes are coming up before impact rather than after';
     return {
       title:'Finish', sub:'Posture & Hand Position',
       bullets:[
         `Balance: ${balance}.`,
         `Posture: spine angle finished about ${fmtDeg(spineAngleAt(frames[keyIdx.finish].lm) - spineAngleAt(frames[keyIdx.address].lm))} different from address.`,
-        `Hands/club: ${c.throughRotation>25?'fully released into a high finish':'finish looks a bit short or cut off'}.`
+        `Hands/club: ${c.throughRotation>25?'fully released into a high finish':'finish looks a bit short or cut off'}.`,
+        `Trail heel: lifted about ${fmtPct(Math.max(0,d.heelLift))} of shoulder width off the ground compared to address (check the video for which foot).`,
+        `Head/eyes: turned about ${fmtPct(impactTurn)} by impact and ${fmtPct(finishTurn)} by the finish — ${eyesRead}.`
       ],
       recommendation: c.throughRotation>25 ? 'A full, committed finish — keep it.' : 'Work on holding a full, balanced finish for a three-count after every swing.'
     };
@@ -1169,13 +1220,14 @@ function describeCheckpoint(key){
   }[key];
   const bullets = [
     `Head: ${headSeverity} shift ${axisH}, about ${fmtPct(hMag)} of shoulder width from address.`,
-    `Hands/wrist condition (body proxy): rotated about ${fmtDeg(d.handRotation)} from address — a rough read on how flat, cupped, or bowed the wrist is holding here; true wrist angle needs hand-landmark tracking we don't have yet.`,
+    `Hands/wrist condition: lead wrist angle changed about ${fmtDeg(d.wristAngleChange)} from address.`,
     `Rotation: shoulders ${d.shoulderRot.toFixed(0)}°, hips ${d.hipRot.toFixed(0)}° from address.`,
     `Swing plane: hands are about ${fmtPct(Math.abs(d.planeOffset))} of shoulder width from the address plane line — check the video overlay for whether that's above (steeper) or below (shallower) it.`
   ];
   let recommendation;
   if(key==='throughHipHigh'){
     bullets.push(`Watch for: the lead arm cutting across the ball rather than extending toward the target.`);
+    bullets.push(`Trail heel: lifted about ${fmtPct(Math.max(0,d.heelLift))} of shoulder width off the ground compared to address (check the video for which foot) — a sign of weight releasing toward the target.`);
     recommendation = c.releaseDelta<10
       ? 'Extension looks limited just after impact — work on the arms extending toward the target here rather than folding early.'
       : 'Extension through this point looks solid — keep the arms working toward the target.';
