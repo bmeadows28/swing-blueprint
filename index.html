@@ -830,34 +830,38 @@ function detectKeyframes(){
     speeds.push(Math.hypot(b.x-a.x,b.y-a.y)/dt);
   }
 
-  // Top of backswing: the golfer's actual highest hand position (global
+  // Top of backswing: the golfer's actual highest hand position (running
   // minimum wrist height), not just the first turning point — a brief pause
   // or wobble partway up the backswing can look like a reversal before the
   // hands keep climbing, so stopping at the first local min lands short of
-  // the true top. To stay immune to a held finish position hijacking a
-  // naive global-min-in-time-window search, bound the search to BEFORE the
-  // downswing's fast motion actually starts: find the overall fastest
-  // frame-to-frame speed in the clip (the downswing is reliably the fastest
-  // part of a swing), then walk forward from address until speed first
-  // sustains a clear fraction of that peak — everything before that point
-  // is still backswing, so the true top (global min wrist height) can only
-  // be found in that window, well before the finish hold later in the clip.
+  // the true top. Two different single-signal ways of deciding "the
+  // downswing has now genuinely begun, stop extending the search" have each
+  // turned out too fragile on their own: watching wrist height alone can be
+  // fooled by a small wobble (fixed in an earlier round), and watching
+  // speed alone can be fooled the other way — a quick, snappy takeaway move
+  // away from the ball can itself briefly cross a speed threshold tuned off
+  // the clip's overall peak (which happens during the downswing), truncating
+  // the search before the swing ever reaches the true top and landing "top"
+  // at roughly the takeaway position instead. Requiring BOTH signals
+  // together — the wrist clearly above the running-min height AND moving
+  // fast — avoids both failure modes: a slow wobble fails the speed check,
+  // and a fast takeaway burst fails the height check (the hands are still
+  // net climbing toward the top, so height won't have cleared the running
+  // min by a clear margin yet).
   let overallMaxSpeed = 0;
   for(let i=1;i<n;i++) overallMaxSpeed = Math.max(overallMaxSpeed, speeds[i]);
-  const DOWNSWING_SPEED_FRAC = 0.35, DOWNSWING_CONFIRM_FRAMES = 3;
+  const DOWNSWING_SPEED_FRAC = 0.35, DOWNSWING_CONFIRM_FRAMES = 3, TOP_RISE_EPS = 0.015;
   const downswingThreshold = overallMaxSpeed * DOWNSWING_SPEED_FRAC;
-  let preDownswingEndI = n-1, aboveStreak = 0;
+  let topI = 0, topVal = wy[0], aboveStreak = 0;
   for(let i=1;i<n;i++){
-    if(speeds[i] >= downswingThreshold){
+    if(wy[i] < topVal){
+      topVal = wy[i]; topI = i; aboveStreak = 0;
+    } else if(wy[i] > topVal + TOP_RISE_EPS && speeds[i] >= downswingThreshold){
       aboveStreak++;
-      if(aboveStreak >= DOWNSWING_CONFIRM_FRAMES){ preDownswingEndI = Math.max(1, i-aboveStreak+1); break; }
+      if(aboveStreak >= DOWNSWING_CONFIRM_FRAMES) break;
     } else {
       aboveStreak = 0;
     }
-  }
-  let topI = 0, topVal = wy[0];
-  for(let i=1;i<=preDownswingEndI;i++){
-    if(wy[i] < topVal){ topVal = wy[i]; topI = i; }
   }
 
   // Impact: at the moment the club meets the ball, the hands return to
