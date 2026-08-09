@@ -909,7 +909,7 @@ function detectKeyframes(){
     }
     return lo+bestK;
   }
-  const backHipHighI = findByArcFraction(addressI, topClamped, 0.35);
+  const backHipHighI = findByArcFraction(addressI, topClamped, 0.28);
   const downHipHighI = findByArcFraction(topClamped, impactClamped, 0.72);
   const throughHipHighI = findByArcFraction(impactClamped, finishI, 0.35);
 
@@ -953,10 +953,19 @@ function angleFromVerticalDeg(p1,p2){
   const dx = Math.abs(p2.x-p1.x), dy = Math.abs(p2.y-p1.y);
   return Math.atan2(dx, dy) * 180/Math.PI;
 }
-function planeTangentAngleDeg(idx){
-  const lo = Math.max(0, idx-1), hi = Math.min(frames.length-1, idx+1);
-  if(hi<=lo) return null;
-  return angleFromVerticalDeg(wristPt(frames[lo].lm), wristPt(frames[hi].lm));
+// A single fixed reference line established at address (hands through
+// shoulders — the classic setup swing-plane line) rather than a fresh
+// estimate at every checkpoint, so the same line can be compared against the
+// hand position at each later checkpoint to see whether the swing is
+// tracking above (steeper) or below (shallower/flatter) that address plane.
+function addressPlanePoints(){
+  const aLm = frames[keyIdx.address].lm;
+  return { p0: wristPt(aLm), p1: mid(aLm[L.lShoulder], aLm[L.rShoulder]) };
+}
+function signedOffsetFromLine(pt, p0, p1){
+  const dx = p1.x-p0.x, dy = p1.y-p0.y;
+  const mag = Math.hypot(dx,dy) || 1;
+  return ((pt.x-p0.x)*dy - (pt.y-p0.y)*dx) / mag;
 }
 
 let computed = {};
@@ -1029,6 +1038,7 @@ function computeCheckpointData(){
   const addressHipAngle = angleDeg(addressLm[L.lHip], addressLm[L.rHip]);
   const addressKneeFlex = (kneeAngleAt(addressLm,'l') + kneeAngleAt(addressLm,'r')) / 2;
   const stanceWidth = dist(addressLm[L.lAnkle], addressLm[L.rAnkle]) || 1;
+  const { p0: planeP0, p1: planeP1 } = addressPlanePoints();
 
   const data = {};
   for(const key of CHECKPOINT_KEYS){
@@ -1048,14 +1058,14 @@ function computeCheckpointData(){
     const kneeFlex = (kneeAngleAt(lm,'l') + kneeAngleAt(lm,'r')) / 2;
     const lowerBodyChange = kneeFlex - addressKneeFlex;
 
-    const planeAngle = planeTangentAngleDeg(idx);
+    const planeOffset = signedOffsetFromLine(wristPt(lm), planeP0, planeP1) / addressShoulderW;
     const handDist = dist(wristPt(lm), mid(lm[L.lHip],lm[L.rHip])) / addressShoulderW;
 
     const hipMidX = mid(lm[L.lHip],lm[L.rHip]).x;
     const stanceMidX = (lm[L.lAnkle].x + lm[L.rAnkle].x) / 2;
     const balanceOffset = (hipMidX - stanceMidX) / stanceWidth;
 
-    data[key] = { headDX, headDY, handRotation, shoulderRot, hipRot, kneeFlex, lowerBodyChange, planeAngle, handDist, balanceOffset };
+    data[key] = { headDX, headDY, handRotation, shoulderRot, hipRot, kneeFlex, lowerBodyChange, planeOffset, handDist, balanceOffset };
   }
   return data;
 }
@@ -1111,7 +1121,7 @@ function describeCheckpoint(key){
         `Head: ${headSeverity} shift ${axisH}, about ${fmtPct(hMag)} of shoulder width from address.`,
         `Hands/clubface (body proxy): rotated about ${fmtDeg(d.handRotation)} from address.`,
         `Rotation: shoulders and hips have returned close to square to address.`,
-        `Swing plane (hand-path estimate): about ${d.planeAngle!=null?d.planeAngle.toFixed(0)+'°':'—'} from vertical.`,
+        `Swing plane: hands are about ${fmtPct(Math.abs(d.planeOffset))} of shoulder width from the address plane line — check the video overlay for whether that's above (steeper) or below (shallower) it.`,
         `Lower body: knee flex changed ${fmtDeg(c.earlyExtension)} from address — ${c.earlyExtension<8?'held well':'standing up out of posture'}.`
       ],
       recommendation: c.earlyExtension>=8
@@ -1142,7 +1152,7 @@ function describeCheckpoint(key){
     `Head: ${headSeverity} shift ${axisH}, about ${fmtPct(hMag)} of shoulder width from address.`,
     `Hands/clubface (body proxy): rotated about ${fmtDeg(d.handRotation)} from address.`,
     `Rotation: shoulders ${d.shoulderRot.toFixed(0)}°, hips ${d.hipRot.toFixed(0)}° from address.`,
-    `Swing plane (hand-path estimate): about ${d.planeAngle!=null?d.planeAngle.toFixed(0)+'°':'—'} from vertical.`
+    `Swing plane: hands are about ${fmtPct(Math.abs(d.planeOffset))} of shoulder width from the address plane line — check the video overlay for whether that's above (steeper) or below (shallower) it.`
   ];
   let recommendation;
   if(key==='throughHipHigh'){
@@ -1703,19 +1713,6 @@ function drawHeadMarker(ctx, lm, w, h){
   ctx.restore();
 }
 
-function drawWristPath(ctx, w, h, uptoIdx){
-  ctx.save();
-  ctx.strokeStyle = 'rgba(198,161,91,0.35)';
-  ctx.lineWidth = 2;
-  ctx.beginPath();
-  for(let i=0;i<=uptoIdx;i++){
-    const p = wristPt(frames[i].lm);
-    if(i===0) ctx.moveTo(p.x*w, p.y*h); else ctx.lineTo(p.x*w, p.y*h);
-  }
-  ctx.stroke();
-  ctx.restore();
-}
-
 function drawStanceLine(ctx, lm, w, h){
   drawTeachingLine(ctx, lm[L.lAnkle], lm[L.rAnkle], '#9fb3c8', 'Stance', w, h, 0.15);
 }
@@ -1736,17 +1733,9 @@ function drawHandMarker(ctx, lm, w, h, label){
   ctx.restore();
 }
 
-function drawPlaneTangentLine(ctx, idx, color, label, w, h){
-  const lo = Math.max(0, idx-1), hi = Math.min(frames.length-1, idx+1);
-  if(hi<=lo) return;
-  const p1 = wristPt(frames[lo].lm), p2 = wristPt(frames[hi].lm);
-  const cur = wristPt(frames[idx].lm);
-  const dx = p2.x-p1.x, dy = p2.y-p1.y;
-  const mag = Math.hypot(dx,dy) || 1;
-  const ux = dx/mag, uy = dy/mag;
-  const a = { x: cur.x - ux*0.22, y: cur.y - uy*0.22 };
-  const b = { x: cur.x + ux*0.22, y: cur.y + uy*0.22 };
-  drawTeachingLine(ctx, a, b, color, label, w, h, 0);
+function drawAddressPlaneLine(ctx, w, h, color, label){
+  const { p0, p1 } = addressPlanePoints();
+  drawTeachingLine(ctx, p0, p1, color, label, w, h, 0.6);
 }
 
 function drawCheckpointBadge(ctx, text, w, h){
@@ -1778,8 +1767,6 @@ function drawCheckpointOverlay(ctx, lm, checkpointKey, idx, w, h){
   const lSh = lm[L.lShoulder], rSh = lm[L.rShoulder];
   const lHip = lm[L.lHip], rHip = lm[L.rHip];
 
-  drawWristPath(ctx, w, h, frames.length-1);
-
   const meta = CHECKPOINT_META[checkpointKey] || CHECKPOINT_META.address;
   drawCheckpointBadge(ctx, meta.label, w, h);
 
@@ -1787,11 +1774,17 @@ function drawCheckpointOverlay(ctx, lm, checkpointKey, idx, w, h){
     case 'address':
       drawTeachingLine(ctx, mid(lHip,rHip), mid(lSh,rSh), '#F6F2E9', 'Spine', w, h, 0.25);
       drawStanceLine(ctx, lm, w, h);
+      // Swing plane reference at address: there's no motion yet to take a
+      // tangent from, so this is the classic hands-through-shoulders line
+      // instructors draw at setup — the plane the club should travel close
+      // to on the way back, rather than an estimate from movement.
+      drawTeachingLine(ctx, wristPt(lm), mid(lSh,rSh), '#8fd6c9', 'Swing Plane', w, h, 0.6);
       break;
     case 'backHipHigh':
       drawTeachingLine(ctx, lHip, rHip, '#E4C378', 'Hips', w, h, 0.3);
       drawTeachingLine(ctx, lSh, rSh, '#C6A15B', 'Shoulders', w, h, 0.3);
-      drawPlaneTangentLine(ctx, idx, '#8fd6c9', 'Swing Plane', w, h);
+      drawAddressPlaneLine(ctx, w, h, '#8fd6c9', 'Swing Plane (address)');
+      drawHandMarker(ctx, lm, w, h, 'Hands');
       break;
     case 'top':
       drawTeachingLine(ctx, lHip, rHip, '#E4C378', 'Hips', w, h, 0.3);
@@ -1802,19 +1795,21 @@ function drawCheckpointOverlay(ctx, lm, checkpointKey, idx, w, h){
     case 'downHipHigh':
       drawTeachingLine(ctx, lHip, rHip, '#E4C378', 'Hips', w, h, 0.3);
       drawTeachingLine(ctx, lSh, rSh, '#C6A15B', 'Shoulders', w, h, 0.3);
-      drawPlaneTangentLine(ctx, idx, '#8fd6c9', 'Swing Plane', w, h);
+      drawAddressPlaneLine(ctx, w, h, '#8fd6c9', 'Swing Plane (address)');
+      drawHandMarker(ctx, lm, w, h, 'Hands');
       break;
     case 'impact':
       drawTeachingLine(ctx, lHip, rHip, '#E4C378', 'Hips', w, h, 0.3);
       drawTeachingLine(ctx, lSh, rSh, '#C6A15B', 'Shoulders', w, h, 0.3);
-      drawPlaneTangentLine(ctx, idx, '#8fd6c9', 'Swing Plane', w, h);
+      drawAddressPlaneLine(ctx, w, h, '#8fd6c9', 'Swing Plane (address)');
       drawHeadMarker(ctx, lm, w, h);
       drawHandMarker(ctx, lm, w, h, 'Hands');
       break;
     case 'throughHipHigh':
       drawTeachingLine(ctx, lHip, rHip, '#E4C378', 'Hips', w, h, 0.3);
       drawTeachingLine(ctx, lSh, rSh, '#C6A15B', 'Shoulders', w, h, 0.3);
-      drawPlaneTangentLine(ctx, idx, '#8fd6c9', 'Swing Plane', w, h);
+      drawAddressPlaneLine(ctx, w, h, '#8fd6c9', 'Swing Plane (address)');
+      drawHandMarker(ctx, lm, w, h, 'Hands');
       drawTeachingLine(ctx, lSh, lm[L.lWrist], '#f2a65a', 'Lead arm', w, h, 0.05);
       break;
     case 'finish':
