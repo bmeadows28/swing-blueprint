@@ -849,30 +849,41 @@ function detectKeyframes(){
     speeds.push(Math.hypot(b.x-a.x,b.y-a.y)/dt);
   }
 
-  // Impact: club/hand speed peaks essentially at the moment of impact, which
-  // gets us to the right neighborhood — but the exact peak-speed frame can
-  // land a touch early or late. Refine within a small window around it by
-  // picking whichever frame's hand position (not just height — full reach)
-  // is closest to address, since hands return close to where they started
-  // right at the ball. Require both neighbors to be slower when finding the
-  // peak so a single noisy/jittery frame can't be mistaken for it; fall back
-  // to the single fastest frame if no clean local peak exists.
-  let speedPeakI = Math.min(topI+1, n-1), bestSpeed = -1;
-  for(let i=topI+1;i<n-1;i++){
-    const isLocalPeak = speeds[i]>=speeds[i-1] && speeds[i]>=speeds[i+1];
-    if(isLocalPeak && speeds[i] > bestSpeed){ bestSpeed = speeds[i]; speedPeakI = i; }
-  }
-  if(bestSpeed < 0){
-    for(let i=topI+1;i<n;i++){
-      if(speeds[i] > bestSpeed){ bestSpeed = speeds[i]; speedPeakI = i; }
+  // Impact: motion blur is worst right at the moment of fastest movement,
+  // which is exactly where impact happens — that can make the pose model
+  // under-track the wrist right at true impact, so the single fastest
+  // computed frame-to-frame speed can land slightly EARLY (an easier-to-track,
+  // less-blurred moment mid-downswing outscoring the true, blurrier peak).
+  // Anchoring a tight refinement window to that single speed frame then
+  // locks the search away from the real impact. Instead: find the whole
+  // "fast motion zone" after the top (bounded by a confirmed, sustained drop
+  // back to slow speed, so the static finish hold can't be mistaken for it),
+  // then within that whole zone pick whichever frame's hand position (full
+  // 2D reach, not just height) is closest to address — since hands return
+  // close to where they started right at the ball, and searching the full
+  // zone rather than a tiny window means an early, blur-related speed
+  // under-read elsewhere in the zone can't hide the true impact frame.
+  let maxSpeedAfterTop = 0;
+  for(let i=topI+1;i<n;i++) maxSpeedAfterTop = Math.max(maxSpeedAfterTop, speeds[i]);
+  const FAST_ZONE_SPEED_FRAC = 0.25, FAST_ZONE_CONFIRM_FRAMES = 4;
+  const speedThreshold = maxSpeedAfterTop * FAST_ZONE_SPEED_FRAC;
+  // The transition pause right after the top is itself naturally slow, so
+  // the "sustained slow" end-of-zone check must not start counting until
+  // the fast zone has actually begun — otherwise it confirms immediately,
+  // right after the top, before the downswing has even gotten going.
+  let fastZoneEndI = n-1, belowStreak = 0, fastZoneStarted = false;
+  for(let i=topI+1;i<n;i++){
+    if(speeds[i] >= speedThreshold){
+      fastZoneStarted = true;
+      belowStreak = 0;
+    } else if(fastZoneStarted){
+      belowStreak++;
+      if(belowStreak >= FAST_ZONE_CONFIRM_FRAMES){ fastZoneEndI = Math.max(topI+1, i-belowStreak); break; }
     }
   }
   const addressWrist = wristPt(frames[0].lm);
-  const IMPACT_REFINE_WINDOW = 3;
-  let impactI = speedPeakI, bestPosDiff = Infinity;
-  const refineLo = Math.max(topI+1, speedPeakI-IMPACT_REFINE_WINDOW);
-  const refineHi = Math.min(n-1, speedPeakI+IMPACT_REFINE_WINDOW);
-  for(let i=refineLo;i<=refineHi;i++){
+  let impactI = topI+1, bestPosDiff = Infinity;
+  for(let i=topI+1;i<=fastZoneEndI;i++){
     const diff = dist(wristPt(frames[i].lm), addressWrist);
     if(diff < bestPosDiff){ bestPosDiff = diff; impactI = i; }
   }
@@ -910,7 +921,7 @@ function detectKeyframes(){
     return lo+bestK;
   }
   const backHipHighI = findByArcFraction(addressI, topClamped, 0.28);
-  const downHipHighI = findByArcFraction(topClamped, impactClamped, 0.72);
+  const downHipHighI = findByArcFraction(topClamped, impactClamped, 0.78);
   const throughHipHighI = findByArcFraction(impactClamped, finishI, 0.35);
 
   keyIdx = {
@@ -953,14 +964,22 @@ function angleFromVerticalDeg(p1,p2){
   const dx = Math.abs(p2.x-p1.x), dy = Math.abs(p2.y-p1.y);
   return Math.atan2(dx, dy) * 180/Math.PI;
 }
-// A single fixed reference line established at address (hands through
-// shoulders — the classic setup swing-plane line) rather than a fresh
+// A single fixed reference line established at address, rather than a fresh
 // estimate at every checkpoint, so the same line can be compared against the
 // hand position at each later checkpoint to see whether the swing is
 // tracking above (steeper) or below (shallower/flatter) that address plane.
+// The real instructor's version of this line runs from the BALL through the
+// HANDS, extended up — using just wrist-to-shoulder instead (arm-hang angle)
+// reads as far steeper/more vertical than a real swing plane, since it never
+// reaches down to where the club actually meets the ground. We don't track
+// the ball or club, but the ankles give a real ground-level anchor already —
+// using that under the wrist approximates the ball-to-hands line much more
+// credibly than stopping at the shoulder.
 function addressPlanePoints(){
   const aLm = frames[keyIdx.address].lm;
-  return { p0: wristPt(aLm), p1: mid(aLm[L.lShoulder], aLm[L.rShoulder]) };
+  const wrist = wristPt(aLm);
+  const groundY = (aLm[L.lAnkle].y + aLm[L.rAnkle].y) / 2;
+  return { p0: { x: wrist.x, y: groundY }, p1: wrist };
 }
 function signedOffsetFromLine(pt, p0, p1){
   const dx = p1.x-p0.x, dy = p1.y-p0.y;
@@ -1685,34 +1704,6 @@ function drawTeachingLine(ctx, p1, p2, color, label, w, h, factor){
   ctx.restore();
 }
 
-function drawHeadMarker(ctx, lm, w, h){
-  const addr = frames[keyIdx.address].lm[L.nose];
-  const cur = lm[L.nose];
-  ctx.save();
-  ctx.beginPath();
-  ctx.arc(addr.x*w, addr.y*h, 9, 0, Math.PI*2);
-  ctx.strokeStyle = 'rgba(246,242,233,0.7)';
-  ctx.lineWidth = 2;
-  ctx.setLineDash([3,3]);
-  ctx.stroke();
-  ctx.setLineDash([]);
-  ctx.font = '600 12px Public Sans, sans-serif';
-  ctx.fillStyle = 'rgba(246,242,233,0.9)';
-  ctx.fillText('Address', addr.x*w+12, addr.y*h+4);
-
-  ctx.beginPath();
-  ctx.arc(cur.x*w, cur.y*h, 9, 0, Math.PI*2);
-  ctx.fillStyle = '#E4C378';
-  ctx.fill();
-  ctx.font = '600 12px Public Sans, sans-serif';
-  ctx.fillStyle = '#E4C378';
-  ctx.strokeStyle = 'rgba(0,0,0,0.6)';
-  ctx.lineWidth = 3;
-  ctx.strokeText('Head', cur.x*w+12, cur.y*h-8);
-  ctx.fillText('Head', cur.x*w+12, cur.y*h-8);
-  ctx.restore();
-}
-
 function drawStanceLine(ctx, lm, w, h){
   drawTeachingLine(ctx, lm[L.lAnkle], lm[L.rAnkle], '#9fb3c8', 'Stance', w, h, 0.15);
 }
@@ -1735,7 +1726,7 @@ function drawHandMarker(ctx, lm, w, h, label){
 
 function drawAddressPlaneLine(ctx, w, h, color, label){
   const { p0, p1 } = addressPlanePoints();
-  drawTeachingLine(ctx, p0, p1, color, label, w, h, 0.6);
+  drawTeachingLine(ctx, p0, p1, color, label, w, h, 0.45);
 }
 
 function drawCheckpointBadge(ctx, text, w, h){
@@ -1775,10 +1766,10 @@ function drawCheckpointOverlay(ctx, lm, checkpointKey, idx, w, h){
       drawTeachingLine(ctx, mid(lHip,rHip), mid(lSh,rSh), '#F6F2E9', 'Spine', w, h, 0.25);
       drawStanceLine(ctx, lm, w, h);
       // Swing plane reference at address: there's no motion yet to take a
-      // tangent from, so this is the classic hands-through-shoulders line
-      // instructors draw at setup — the plane the club should travel close
-      // to on the way back, rather than an estimate from movement.
-      drawTeachingLine(ctx, wristPt(lm), mid(lSh,rSh), '#8fd6c9', 'Swing Plane', w, h, 0.6);
+      // tangent from, so this draws the fixed ball-to-hands line (approximated
+      // via the ankles as a ground anchor) that gets carried through to the
+      // other checkpoints, rather than an estimate from movement.
+      drawAddressPlaneLine(ctx, w, h, '#8fd6c9', 'Swing Plane');
       break;
     case 'backHipHigh':
       drawTeachingLine(ctx, lHip, rHip, '#E4C378', 'Hips', w, h, 0.3);
@@ -1801,8 +1792,6 @@ function drawCheckpointOverlay(ctx, lm, checkpointKey, idx, w, h){
       drawTeachingLine(ctx, lHip, rHip, '#E4C378', 'Hips', w, h, 0.3);
       drawTeachingLine(ctx, lSh, rSh, '#C6A15B', 'Shoulders', w, h, 0.3);
       drawAddressPlaneLine(ctx, w, h, '#8fd6c9', 'Swing Plane (address)');
-      drawHeadMarker(ctx, lm, w, h);
-      drawHandMarker(ctx, lm, w, h, 'Hands');
       break;
     case 'throughHipHigh':
       drawTeachingLine(ctx, lHip, rHip, '#E4C378', 'Hips', w, h, 0.3);
