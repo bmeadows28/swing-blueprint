@@ -474,7 +474,7 @@
     <div class="sub">Estimated from a single camera angle — most accurate when filmed face-on or down-the-line at roughly hip height.</div>
     <div class="metrics-grid" id="metricsGrid"></div>
     <div class="flag-box">
-      <b>Not measured here:</b> grip pressure (needs a sensor in the glove/grip — no video can capture this), and true club path / face angle or club rotation in degrees (that needs radar or camera tracking of the actual clubhead, which is what your TrackMan, Foresight, or FlightScope does — once device sync is live, that data will layer in alongside this). The "Swing Plane" reading below is estimated from your hand path, not the clubhead — a proxy for swing direction, not a lab measurement.
+      <b>Not measured here:</b> grip pressure (needs a sensor in the glove/grip — no video can capture this), and swing plane, club path, face angle, or club rotation in degrees (all of that needs radar or camera tracking of the actual clubhead, which is what your TrackMan, Foresight, or FlightScope does — once device sync is live, that data will layer in alongside this).
     </div>
   </div>
 
@@ -823,28 +823,6 @@ function detectKeyframes(){
   const n = frames.length;
   const wy = frames.map(f=>wristPt(f.lm).y);
 
-  // Top of backswing: the FIRST confirmed local minimum of wrist height —
-  // a genuine turning point (hands rising, then reversing to fall) — not the
-  // global minimum within an arbitrary time window. A short clip with a fast
-  // swing followed by a long static finish hold (very plausible for a ~2s
-  // clip) can easily have the held finish position — hands up high — sit
-  // higher than the true top and still fall inside a time-based cutoff,
-  // hijacking "top" into showing the follow-through instead. Stopping at the
-  // first clear reversal makes this immune to whatever happens later in the
-  // clip. Require a few consecutive frames of clear rise (past a small noise
-  // tolerance) before confirming the reversal, so landmark jitter during the
-  // backswing's climb can't trigger a false-early stop.
-  let topI = 0, topVal = wy[0], sinceMin = 0;
-  const TOP_CONFIRM_FRAMES = 3, TOP_RISE_EPS = 0.015;
-  for(let i=1;i<n;i++){
-    if(wy[i] < topVal - TOP_RISE_EPS*0.2){
-      topVal = wy[i]; topI = i; sinceMin = 0;
-    } else if(wy[i] > topVal + TOP_RISE_EPS){
-      sinceMin++;
-      if(sinceMin >= TOP_CONFIRM_FRAMES) break;
-    }
-  }
-
   let speeds = [0];
   for(let i=1;i<n;i++){
     const a = wristPt(frames[i-1].lm), b = wristPt(frames[i].lm);
@@ -852,43 +830,47 @@ function detectKeyframes(){
     speeds.push(Math.hypot(b.x-a.x,b.y-a.y)/dt);
   }
 
-  // Impact: motion blur is worst right at the moment of fastest movement,
-  // which is exactly where impact happens — that can make the pose model
-  // under-track the wrist right at true impact, so the single fastest
-  // computed frame-to-frame speed can land slightly EARLY (an easier-to-track,
-  // less-blurred moment mid-downswing outscoring the true, blurrier peak).
-  // Anchoring a tight refinement window to that single speed frame then
-  // locks the search away from the real impact. Instead: find the whole
-  // "fast motion zone" after the top (bounded by a confirmed, sustained drop
-  // back to slow speed, so the static finish hold can't be mistaken for it),
-  // then within that whole zone pick whichever frame's hand position (full
-  // 2D reach, not just height) is closest to address — since hands return
-  // close to where they started right at the ball, and searching the full
-  // zone rather than a tiny window means an early, blur-related speed
-  // under-read elsewhere in the zone can't hide the true impact frame.
-  let maxSpeedAfterTop = 0;
-  for(let i=topI+1;i<n;i++) maxSpeedAfterTop = Math.max(maxSpeedAfterTop, speeds[i]);
-  const FAST_ZONE_SPEED_FRAC = 0.25, FAST_ZONE_CONFIRM_FRAMES = 4;
-  const speedThreshold = maxSpeedAfterTop * FAST_ZONE_SPEED_FRAC;
-  // The transition pause right after the top is itself naturally slow, so
-  // the "sustained slow" end-of-zone check must not start counting until
-  // the fast zone has actually begun — otherwise it confirms immediately,
-  // right after the top, before the downswing has even gotten going.
-  let fastZoneEndI = n-1, belowStreak = 0, fastZoneStarted = false;
-  for(let i=topI+1;i<n;i++){
-    if(speeds[i] >= speedThreshold){
-      fastZoneStarted = true;
-      belowStreak = 0;
-    } else if(fastZoneStarted){
-      belowStreak++;
-      if(belowStreak >= FAST_ZONE_CONFIRM_FRAMES){ fastZoneEndI = Math.max(topI+1, i-belowStreak); break; }
+  // Top of backswing: the golfer's actual highest hand position (global
+  // minimum wrist height), not just the first turning point — a brief pause
+  // or wobble partway up the backswing can look like a reversal before the
+  // hands keep climbing, so stopping at the first local min lands short of
+  // the true top. To stay immune to a held finish position hijacking a
+  // naive global-min-in-time-window search, bound the search to BEFORE the
+  // downswing's fast motion actually starts: find the overall fastest
+  // frame-to-frame speed in the clip (the downswing is reliably the fastest
+  // part of a swing), then walk forward from address until speed first
+  // sustains a clear fraction of that peak — everything before that point
+  // is still backswing, so the true top (global min wrist height) can only
+  // be found in that window, well before the finish hold later in the clip.
+  let overallMaxSpeed = 0;
+  for(let i=1;i<n;i++) overallMaxSpeed = Math.max(overallMaxSpeed, speeds[i]);
+  const DOWNSWING_SPEED_FRAC = 0.35, DOWNSWING_CONFIRM_FRAMES = 3;
+  const downswingThreshold = overallMaxSpeed * DOWNSWING_SPEED_FRAC;
+  let preDownswingEndI = n-1, aboveStreak = 0;
+  for(let i=1;i<n;i++){
+    if(speeds[i] >= downswingThreshold){
+      aboveStreak++;
+      if(aboveStreak >= DOWNSWING_CONFIRM_FRAMES){ preDownswingEndI = Math.max(1, i-aboveStreak+1); break; }
+    } else {
+      aboveStreak = 0;
     }
   }
-  const addressWrist = wristPt(frames[0].lm);
-  let impactI = topI+1, bestPosDiff = Infinity;
-  for(let i=topI+1;i<=fastZoneEndI;i++){
-    const diff = dist(wristPt(frames[i].lm), addressWrist);
-    if(diff < bestPosDiff){ bestPosDiff = diff; impactI = i; }
+  let topI = 0, topVal = wy[0];
+  for(let i=1;i<=preDownswingEndI;i++){
+    if(wy[i] < topVal){ topVal = wy[i]; topI = i; }
+  }
+
+  // Impact: the lowest point the hands reach during the downswing/follow-
+  // through — the bottom of the swing arc, right around where the club
+  // meets the ball. Rather than inferring it indirectly from speed (motion
+  // blur right at impact can distort frame-to-frame speed readings), use
+  // the hand height itself directly: the global maximum wrist Y (lowest
+  // hand position, since Y increases downward) after the top. The hands
+  // reliably rise back up through release and the finish afterward, so
+  // this can't be hijacked by a later held finish position.
+  let impactI = topI+1, impactVal = wy[Math.min(topI+1,n-1)];
+  for(let i=topI+1;i<n;i++){
+    if(wy[i] > impactVal){ impactVal = wy[i]; impactI = i; }
   }
 
   const addressI = 0;
@@ -976,33 +958,6 @@ function wristAngleAt(f, side){
   const a1 = angleDeg(wr, el), a2 = angleDeg(wr, idx);
   return Math.abs(a1-a2);
 }
-function angleFromVerticalDeg(p1,p2){
-  const dx = Math.abs(p2.x-p1.x), dy = Math.abs(p2.y-p1.y);
-  return Math.atan2(dx, dy) * 180/Math.PI;
-}
-// A single fixed reference line established at address, rather than a fresh
-// estimate at every checkpoint, so the same line can be compared against the
-// hand position at each later checkpoint to see whether the swing is
-// tracking above (steeper) or below (shallower/flatter) that address plane.
-// The real instructor's version of this line runs from the BALL through the
-// HANDS, extended up — using just wrist-to-shoulder instead (arm-hang angle)
-// reads as far steeper/more vertical than a real swing plane, since it never
-// reaches down to where the club actually meets the ground. We don't track
-// the ball or club, but the ankles give a real ground-level anchor already —
-// using that under the wrist approximates the ball-to-hands line much more
-// credibly than stopping at the shoulder.
-function addressPlanePoints(){
-  const aLm = frames[keyIdx.address].lm;
-  const wrist = wristPt(aLm);
-  const groundY = (aLm[L.lAnkle].y + aLm[L.rAnkle].y) / 2;
-  return { p0: { x: wrist.x, y: groundY }, p1: wrist };
-}
-function signedOffsetFromLine(pt, p0, p1){
-  const dx = p1.x-p0.x, dy = p1.y-p0.y;
-  const mag = Math.hypot(dx,dy) || 1;
-  return ((pt.x-p0.x)*dy - (pt.y-p0.y)*dx) / mag;
-}
-
 let computed = {};
 let checkpointData = {};
 let cameraAngle = 'unknown';
@@ -1054,8 +1009,6 @@ function buildMetrics(){
   const kneeFlexI = (kneeAngleAt(fI,'l') + kneeAngleAt(fI,'r')) / 2;
   const earlyExtension = kneeFlexI - kneeFlexA;
 
-  const swingPlaneAngle = angleFromVerticalDeg(wristPt(fA), wristPt(fT));
-
   const midAfterI = frames[Math.min(keyIdx.impact + Math.round((keyIdx.finish-keyIdx.impact)*0.25), keyIdx.finish)].lm;
   const extensionAtImpact = elbowAngleAt(fI,'l');
   const extensionAfter = elbowAngleAt(midAfterI,'l');
@@ -1069,7 +1022,7 @@ function buildMetrics(){
     tempoRatio, backT, downT, separation, shoulderTurn, hipTurn,
     headDrift, spineChange, stanceRatio,
     releaseDelta, throughRotation,
-    hipSway, earlyExtension, swingPlaneAngle,
+    hipSway, earlyExtension,
     leadFootFlare, trailFootFlare
   };
 
@@ -1077,9 +1030,8 @@ function buildMetrics(){
   renderMetrics();
 }
 
-// Per-checkpoint readouts: head shift, hand/clubface rotation (a body-based
-// proxy — no clubface tracking is available), rotation, swing-plane hand-path
-// estimate, and lower-body change, all measured relative to address.
+// Per-checkpoint readouts: head shift, hand/wrist condition, rotation, and
+// lower-body change, all measured relative to address.
 function computeCheckpointData(){
   const addressLm = frames[keyIdx.address].lm;
   const addressShoulderW = dist(addressLm[L.lShoulder], addressLm[L.rShoulder]) || 1;
@@ -1087,7 +1039,6 @@ function computeCheckpointData(){
   const addressHipAngle = angleDeg(addressLm[L.lHip], addressLm[L.rHip]);
   const addressKneeFlex = (kneeAngleAt(addressLm,'l') + kneeAngleAt(addressLm,'r')) / 2;
   const stanceWidth = dist(addressLm[L.lAnkle], addressLm[L.rAnkle]) || 1;
-  const { p0: planeP0, p1: planeP1 } = addressPlanePoints();
   const addressWristAngle = wristAngleAt(addressLm,'l');
   const addressEarTilt = angleDeg(addressLm[L.lEar], addressLm[L.rEar]);
   const addressEyeWidth = dist(addressLm[L.lEye], addressLm[L.rEye]) || 1;
@@ -1107,7 +1058,6 @@ function computeCheckpointData(){
     const kneeFlex = (kneeAngleAt(lm,'l') + kneeAngleAt(lm,'r')) / 2;
     const lowerBodyChange = kneeFlex - addressKneeFlex;
 
-    const planeOffset = signedOffsetFromLine(wristPt(lm), planeP0, planeP1) / addressShoulderW;
     const handDist = dist(wristPt(lm), mid(lm[L.lHip],lm[L.rHip])) / addressShoulderW;
 
     const hipMidX = mid(lm[L.lHip],lm[L.rHip]).x;
@@ -1126,7 +1076,7 @@ function computeCheckpointData(){
     const rHeelLift = (addressHeelY.r - lm[L.rHeel].y) / addressShoulderW;
     const heelLift = Math.max(lHeelLift, rHeelLift);
 
-    data[key] = { headDX, headDY, shoulderRot, hipRot, kneeFlex, lowerBodyChange, planeOffset, handDist, balanceOffset, wristAngleChange, earTiltChange, eyeWidthRatio, heelLift };
+    data[key] = { headDX, headDY, shoulderRot, hipRot, kneeFlex, lowerBodyChange, handDist, balanceOffset, wristAngleChange, earTiltChange, eyeWidthRatio, heelLift };
   }
   return data;
 }
@@ -1170,7 +1120,6 @@ function describeCheckpoint(key){
         `Head: ${headSeverity} shift ${axisH}, about ${fmtPct(hMag)} of shoulder width from address.`,
         `Hands/wrist condition: lead wrist angle changed about ${fmtDeg(d.wristAngleChange)} from address — a 2D read from the hand landmark, not a lab measurement, but a real joint angle rather than a cross-body line estimate.`,
         `Rotation: shoulders ${c.shoulderTurn.toFixed(0)}°, hips ${c.hipTurn.toFixed(0)}° — about ${c.separation.toFixed(0)}° of separation.`,
-        `Swing plane (hand-path estimate): about ${c.swingPlaneAngle.toFixed(0)}° from vertical.`,
         `Lower body: knee flex changed ${fmtDeg(d.lowerBodyChange)} from address.`
       ],
       recommendation: c.separation<28 ? 'Work on resisting with the lower body a bit longer in the backswing to build more coil.' : 'A solid amount of coil here — the goal now is using it efficiently on the way down.'
@@ -1178,13 +1127,12 @@ function describeCheckpoint(key){
   }
   if(key==='impact'){
     return {
-      title:'Impact', sub:'Rotation, Plane, Height & Hands',
+      title:'Impact', sub:'Rotation, Height & Hands',
       bullets:[
         `Head: ${headSeverity} shift ${axisH}, about ${fmtPct(hMag)} of shoulder width from address.`,
         `Hands/wrist condition: lead wrist angle changed about ${fmtDeg(d.wristAngleChange)} from address.`,
         `Rotation: shoulders and hips have returned close to square to address.`,
         `Head tilt (face-on read): changed about ${fmtDeg(d.earTiltChange)} from address.`,
-        `Swing plane: hands are about ${fmtPct(Math.abs(d.planeOffset))} of shoulder width from the address plane line — check the video overlay for whether that's above (steeper) or below (shallower) it.`,
         `Lower body: knee flex changed ${fmtDeg(c.earlyExtension)} from address — ${c.earlyExtension<8?'held well':'standing up out of posture'}.`
       ],
       recommendation: c.earlyExtension>=8
@@ -1214,15 +1162,14 @@ function describeCheckpoint(key){
 
   // The three hip-high checkpoints share the same observation set.
   const stageMeta = {
-    backHipHigh:   { title:'Takeaway', sub:'Hip-High — Rotation & Plane' },
-    downHipHigh:   { title:'Transition', sub:'Hip-High — Rotation & Plane' },
-    throughHipHigh:{ title:'Release', sub:'Hip-High — Rotation, Plane & Arm Path' }
+    backHipHigh:   { title:'Takeaway', sub:'Hip-High — Rotation' },
+    downHipHigh:   { title:'Transition', sub:'Hip-High — Rotation' },
+    throughHipHigh:{ title:'Release', sub:'Hip-High — Rotation & Arm Path' }
   }[key];
   const bullets = [
     `Head: ${headSeverity} shift ${axisH}, about ${fmtPct(hMag)} of shoulder width from address.`,
     `Hands/wrist condition: lead wrist angle changed about ${fmtDeg(d.wristAngleChange)} from address.`,
-    `Rotation: shoulders ${d.shoulderRot.toFixed(0)}°, hips ${d.hipRot.toFixed(0)}° from address.`,
-    `Swing plane: hands are about ${fmtPct(Math.abs(d.planeOffset))} of shoulder width from the address plane line — check the video overlay for whether that's above (steeper) or below (shallower) it.`
+    `Rotation: shoulders ${d.shoulderRot.toFixed(0)}°, hips ${d.hipRot.toFixed(0)}° from address.`
   ];
   let recommendation;
   if(key==='throughHipHigh'){
@@ -1471,7 +1418,7 @@ function buildBlueprint(){
 
   const summaryLine = `Tempo ran ${c.tempoRatio.toFixed(1)}:1 (back:down), hip-shoulder separation was about ${c.separation.toFixed(0)}°, head moved ${(c.headDrift*100).toFixed(0)}% of shoulder width from address to impact, and knee flex changed ${c.earlyExtension.toFixed(0)}° through the hitting zone.`;
 
-  const backswingObs = `Backswing: shoulders turned ${c.shoulderTurn.toFixed(0)}° against hips at ${c.hipTurn.toFixed(0)}°, about ${c.separation.toFixed(0)}° of separation; hand path ran roughly ${c.swingPlaneAngle.toFixed(0)}° from vertical.`;
+  const backswingObs = `Backswing: shoulders turned ${c.shoulderTurn.toFixed(0)}° against hips at ${c.hipTurn.toFixed(0)}°, about ${c.separation.toFixed(0)}° of separation.`;
   const impactObs = `Impact: head moved ${(c.headDrift*100).toFixed(0)}% of shoulder width from address, and knee flex changed ${fmtDeg(c.earlyExtension)} through the hitting zone.`;
   const forwardObs = `Forward swing: lead arm extension changed ${fmtDeg(c.releaseDelta)} just after impact, and shoulders rotated ${c.throughRotation.toFixed(0)}° into the finish.`;
 
@@ -1776,11 +1723,6 @@ function drawHandMarker(ctx, lm, w, h, label){
   ctx.restore();
 }
 
-function drawAddressPlaneLine(ctx, w, h, color, label){
-  const { p0, p1 } = addressPlanePoints();
-  drawTeachingLine(ctx, p0, p1, color, label, w, h, 0.45);
-}
-
 function drawCheckpointBadge(ctx, text, w, h){
   ctx.save();
   ctx.font = '600 13px Public Sans, sans-serif';
@@ -1798,11 +1740,11 @@ function drawCheckpointBadge(ctx, text, w, h){
 
 const CHECKPOINT_META = {
   address:        { label:'Address — Posture & Stance' },
-  backHipHigh:    { label:'Takeaway (Hip-High) — Rotation & Plane' },
+  backHipHigh:    { label:'Takeaway (Hip-High) — Rotation' },
   top:            { label:'Top — Rotation, Hands & Height' },
-  downHipHigh:    { label:'Transition (Hip-High) — Rotation & Plane' },
-  impact:         { label:'Impact — Rotation, Plane, Height & Hands' },
-  throughHipHigh: { label:'Release (Hip-High) — Rotation, Plane & Arm Path' },
+  downHipHigh:    { label:'Transition (Hip-High) — Rotation' },
+  impact:         { label:'Impact — Rotation, Height & Hands' },
+  throughHipHigh: { label:'Release (Hip-High) — Rotation & Arm Path' },
   finish:         { label:'Finish — Posture & Hands' }
 };
 
@@ -1817,38 +1759,28 @@ function drawCheckpointOverlay(ctx, lm, checkpointKey, idx, w, h){
     case 'address':
       drawTeachingLine(ctx, mid(lHip,rHip), mid(lSh,rSh), '#F6F2E9', 'Spine', w, h, 0.25);
       drawStanceLine(ctx, lm, w, h);
-      // Swing plane reference at address: there's no motion yet to take a
-      // tangent from, so this draws the fixed ball-to-hands line (approximated
-      // via the ankles as a ground anchor) that gets carried through to the
-      // other checkpoints, rather than an estimate from movement.
-      drawAddressPlaneLine(ctx, w, h, '#8fd6c9', 'Swing Plane');
       break;
     case 'backHipHigh':
       drawTeachingLine(ctx, lHip, rHip, '#E4C378', 'Hips', w, h, 0.3);
       drawTeachingLine(ctx, lSh, rSh, '#C6A15B', 'Shoulders', w, h, 0.3);
-      drawAddressPlaneLine(ctx, w, h, '#8fd6c9', 'Swing Plane (address)');
       drawHandMarker(ctx, lm, w, h, 'Hands');
       break;
     case 'top':
       drawTeachingLine(ctx, lHip, rHip, '#E4C378', 'Hips', w, h, 0.3);
       drawTeachingLine(ctx, lSh, rSh, '#C6A15B', 'Shoulders', w, h, 0.3);
-      drawAddressPlaneLine(ctx, w, h, '#8fd6c9', 'Swing Plane (address)');
       break;
     case 'downHipHigh':
       drawTeachingLine(ctx, lHip, rHip, '#E4C378', 'Hips', w, h, 0.3);
       drawTeachingLine(ctx, lSh, rSh, '#C6A15B', 'Shoulders', w, h, 0.3);
-      drawAddressPlaneLine(ctx, w, h, '#8fd6c9', 'Swing Plane (address)');
       drawHandMarker(ctx, lm, w, h, 'Hands');
       break;
     case 'impact':
       drawTeachingLine(ctx, lHip, rHip, '#E4C378', 'Hips', w, h, 0.3);
       drawTeachingLine(ctx, lSh, rSh, '#C6A15B', 'Shoulders', w, h, 0.3);
-      drawAddressPlaneLine(ctx, w, h, '#8fd6c9', 'Swing Plane (address)');
       break;
     case 'throughHipHigh':
       drawTeachingLine(ctx, lHip, rHip, '#E4C378', 'Hips', w, h, 0.3);
       drawTeachingLine(ctx, lSh, rSh, '#C6A15B', 'Shoulders', w, h, 0.3);
-      drawAddressPlaneLine(ctx, w, h, '#8fd6c9', 'Swing Plane (address)');
       drawHandMarker(ctx, lm, w, h, 'Hands');
       drawTeachingLine(ctx, lSh, lm[L.lWrist], '#f2a65a', 'Lead arm', w, h, 0.05);
       break;
