@@ -935,7 +935,16 @@ function detectKeyframes(){
   // circular relationship. Clamped to finishI: on a very short/sparsely-
   // sampled clip, "at least downHipHigh+2" could otherwise push past the
   // end of the frames array entirely.
-  const throughHipHighI = Math.min(Math.max(findByArcFraction(swingLowI, finishI, 0.35), downHipHighI+2), finishI);
+  //
+  // Confirmed against real footage (same side-by-side scrubber comparison
+  // used for Impact below): the raw arc-fraction frame lands a beat late,
+  // so a small fixed nudge back compensates, floored so it can't collide
+  // with Transition.
+  const RELEASE_NUDGE_FRAMES = 1;
+  const throughHipHighI = Math.max(
+    Math.min(Math.max(findByArcFraction(swingLowI, finishI, 0.35), downHipHighI+2), finishI) - RELEASE_NUDGE_FRAMES,
+    downHipHighI+2
+  );
 
   // Impact: matched using the INDEX FINGER position rather than the wrist
   // joint — the wrist stays relatively close to the body regardless of how
@@ -963,7 +972,7 @@ function detectKeyframes(){
   // tracked) can coincidentally score as a slightly better position match
   // without actually being closer to the ball. A small fixed nudge forward
   // compensates directly.
-  const IMPACT_BLUR_NUDGE_FRAMES = 2;
+  const IMPACT_BLUR_NUDGE_FRAMES = 1;
   // Capped below Release (computed above, independent of Impact) so the
   // nudge can't push Impact all the way into, or past, the Release frame
   // on a short/tightly-spaced clip.
