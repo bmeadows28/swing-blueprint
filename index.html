@@ -864,33 +864,47 @@ function detectKeyframes(){
     }
   }
 
-  // Impact: at the moment the club meets the ball, the hands return to
-  // essentially the same spot they started at address — that's a more
-  // direct signal than the lowest point of the hand path, since the swing
-  // arc's actual low point doesn't always land exactly at the same height
-  // as address (setup dynamics, camera angle, a slightly descending vs.
-  // sweeping strike all shift it). So find whichever frame's hand position
-  // (full 2D — both reach and height) is closest to address, searched
-  // across the whole post-top range. Hands moving up and away through
-  // release and the finish afterward means nothing later in the clip can
-  // coincidentally sit closer to address than the real impact frame does.
+  // Impact: at the moment the club meets the ball, the hands are back at
+  // essentially the same HEIGHT they started at address (the ball sits at
+  // one fixed height throughout, so this is a stable, camera-angle-honest
+  // reference). Matching full 2D position (reach AND height) to address was
+  // tried, but on real footage the reach/x reading is noisier than height —
+  // small perspective and depth shifts through the downswing can put a
+  // wrong, too-early frame's (x,y) pair transiently closer to address
+  // than the true impact frame's, dragging Impact toward Transition.
+  // Matching height alone avoids that noise while still ruling out a later,
+  // deeper post-impact dip (extension can carry the hands a beat past the
+  // ball before they rise into the finish) — a dip like that overshoots
+  // past address height rather than matching it, so it won't win.
+  const addressWristY = wristPt(frames[0].lm).y;
+  let impactI = topI+1, bestYDiff = Infinity;
+  for(let i=topI+1;i<n;i++){
+    const diff = Math.abs(wristPt(frames[i].lm).y - addressWristY);
+    if(diff < bestYDiff){ bestYDiff = diff; impactI = i; }
+  }
+
+  // Transition (hip-high on the way down) is intentionally anchored to the
+  // OLD full-2D position-match value below, not the height-only Impact
+  // frame above — Transition was already landing well, and since it's
+  // computed as a fraction of the Top-to-Impact path, letting it ride on
+  // Impact's frame would shift Transition every time Impact's detection is
+  // retuned, even when Transition itself isn't the problem. Keeping this as
+  // a separate, internal reference point (never shown as its own
+  // checkpoint) means fixing Impact can't quietly move Transition too.
   const addressWrist = wristPt(frames[0].lm);
-  let impactI = topI+1, bestPosDiff = Infinity;
+  let transitionAnchorI = topI+1, bestPosDiff = Infinity;
   for(let i=topI+1;i<n;i++){
     const diff = dist(wristPt(frames[i].lm), addressWrist);
-    if(diff < bestPosDiff){ bestPosDiff = diff; impactI = i; }
+    if(diff < bestPosDiff){ bestPosDiff = diff; transitionAnchorI = i; }
   }
 
   // The Release checkpoint (hip-high on the way through) is timed off the
-  // bottom of the swing arc, not off the Impact frame above — Impact now
-  // matches address position (the moment the club meets the ball), which
-  // can land a touch earlier than the hands' actual lowest point (their
-  // extension can keep carrying them down a beat after the strike). Using
-  // the new, earlier Impact frame as Release's start boundary was quietly
-  // dragging Release earlier too, even though nothing about Release itself
-  // was wrong. Anchoring Release to the swing's true low point instead
-  // (independent of exactly where Impact lands) keeps Release where it was
-  // before Impact's detection changed.
+  // bottom of the swing arc, not off the Impact frame — the hands' actual
+  // lowest point can land a beat after Impact (extension carries them down
+  // a touch further before they rise into the finish). Anchoring Release to
+  // the swing's true low point directly, independent of exactly where
+  // Impact lands, keeps Release stable even as Impact's detection is
+  // retuned.
   let swingLowI = topI+1, swingLowVal = wy[Math.min(topI+1,n-1)];
   for(let i=topI+1;i<n;i++){
     if(wy[i] > swingLowVal){ swingLowVal = wy[i]; swingLowI = i; }
@@ -899,8 +913,7 @@ function detectKeyframes(){
   const addressI = 0;
   const finishI = n-1;
   const topClamped = Math.max(topI,1);
-  const impactClamped = Math.max(impactI,topI+1);
-  const releaseAnchorI = Math.max(swingLowI, impactClamped);
+  const transitionAnchorClamped = Math.max(transitionAnchorI, topI+1);
 
   // Three "hip-high" checkpoints — hands roughly hip height on the way back,
   // hip height again coming into the hitting zone, and hip height just after
@@ -930,7 +943,11 @@ function detectKeyframes(){
     return lo+bestK;
   }
   const backHipHighI = findByArcFraction(addressI, topClamped, 0.28);
-  const downHipHighI = findByArcFraction(topClamped, impactClamped, 0.78);
+  const downHipHighI = findByArcFraction(topClamped, transitionAnchorClamped, 0.78);
+  // Floored at Transition+1 so a height-matched Impact can never land before
+  // (or on top of) the Transition frame above, even on an unusual clip.
+  const impactClamped = Math.max(impactI, downHipHighI+1);
+  const releaseAnchorI = Math.max(swingLowI, impactClamped);
   const throughHipHighI = Math.max(findByArcFraction(releaseAnchorI, finishI, 0.35), impactClamped+1);
 
   keyIdx = {
