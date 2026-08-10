@@ -817,6 +817,10 @@ function wristPt(lm){
   const l = lm[L.lWrist], r = lm[L.rWrist];
   return { x:(l.x+r.x)/2, y:(l.y+r.y)/2 };
 }
+function indexPt(lm){
+  const l = lm[L.lIndex], r = lm[L.rIndex];
+  return { x:(l.x+r.x)/2, y:(l.y+r.y)/2 };
+}
 
 function detectKeyframes(){
   frames.sort((a,b)=>a.t-b.t);
@@ -933,18 +937,24 @@ function detectKeyframes(){
   // end of the frames array entirely.
   const throughHipHighI = Math.min(Math.max(findByArcFraction(swingLowI, finishI, 0.35), downHipHighI+2), finishI);
 
-  // Impact: at the moment the club meets the ball, the hands return to
-  // essentially the same spot they started at address — the full-2D (reach
-  // AND height) closest-position-match to address, computed above as
-  // transitionAnchorClamped. This measured closest to true impact on
-  // validation data; later attempts to refine it (height-only matching,
-  // various bounded search windows) each moved it further from the mark on
-  // real footage, so reverting to this version specifically. Reusing
-  // transitionAnchorClamped directly (rather than a second, separate
-  // search) means Impact and Transition's internal anchor are guaranteed
-  // identical, and Transition's own frame (downHipHighI, computed above,
-  // already independent of Impact) is completely unaffected either way.
-  const impactClamped = transitionAnchorClamped;
+  // Impact: matched using the INDEX FINGER position rather than the wrist
+  // joint — the wrist stays relatively close to the body regardless of how
+  // the club extends, so it doesn't capture forward press / hands-ahead
+  // lean at impact as precisely as the fingers do, which extend further out
+  // along the actual grip direction and should track closer to where the
+  // club is. Full 2D (reach AND height) closest-position-match to address,
+  // searched across the whole post-Top range — same search shape that
+  // measured closest to true impact previously, just on the finger
+  // landmark instead of the wrist. Computed as its own separate search
+  // (not reusing transitionAnchorClamped) so this can't affect Transition,
+  // which stays wrist-based and untouched.
+  const addressIndex = indexPt(frames[0].lm);
+  let impactI = topI+1, bestIndexDiff = Infinity;
+  for(let i=topI+1;i<n;i++){
+    const diff = dist(indexPt(frames[i].lm), addressIndex);
+    if(diff < bestIndexDiff){ bestIndexDiff = diff; impactI = i; }
+  }
+  const impactClamped = Math.max(impactI, topI+1);
 
   keyIdx = {
     address:addressI,
