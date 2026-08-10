@@ -929,26 +929,44 @@ function detectKeyframes(){
   // Release is anchored to the swing's true low point directly, fully
   // independent of Impact below — Impact is now derived FROM Transition
   // and Release, so Release can't also depend on Impact without creating a
-  // circular relationship.
-  const throughHipHighI = Math.max(findByArcFraction(swingLowI, finishI, 0.35), downHipHighI+2);
+  // circular relationship. Clamped to finishI: on a very short/sparsely-
+  // sampled clip, "at least downHipHigh+2" could otherwise push past the
+  // end of the frames array entirely.
+  const throughHipHighI = Math.min(Math.max(findByArcFraction(swingLowI, finishI, 0.35), downHipHighI+2), finishI);
 
   // Impact: matching hand height to address is the physically meaningful
   // signal (the ball sits at one fixed height throughout, so it's a stable,
   // camera-honest reference that generalizes across different swings/tempos
-  // in a way a fixed time-fraction wouldn't). It's searched only within the
-  // FULL span between Transition and Release — both already confirmed
-  // accurate and computed independently of Impact — so a frame outside the
-  // actual hitting zone can't win a close height match by chance. Using the
-  // whole Transition-to-Release span (not just up to the swing's single
-  // lowest-point frame) keeps this window from ever collapsing too tight to
-  // find a meaningful best match.
+  // in a way a fixed time-fraction wouldn't), searched only within the span
+  // between Transition and Release — both already confirmed accurate — so a
+  // frame outside the actual hitting zone can't be considered at all.
+  //
+  // Within that window, take the FIRST local minimum of the height
+  // difference (confirmed by a clear, sustained move away from it), not the
+  // single closest match across the whole window. On a short clip there may
+  // only be a handful of sampled frames covering the whole downswing/
+  // follow-through, and scanning the entire window for a global best can
+  // get pulled toward a frame that's coincidentally close in height much
+  // later — well into the follow-through, after the hands have already
+  // risen back up and rotation has continued opening up — rather than the
+  // true, earliest crossing right at the ball.
   const addressWristY = wristPt(frames[0].lm).y;
-  let impactI = downHipHighI+1, bestYDiff = Infinity;
-  for(let i=downHipHighI+1;i<throughHipHighI;i++){
+  const IMPACT_CONFIRM_FRAMES = 2, IMPACT_RISE_EPS = 0.01;
+  let impactI = downHipHighI+1;
+  let bestYDiff = Math.abs(wristPt(frames[impactI].lm).y - addressWristY);
+  let sinceMin = 0;
+  for(let i=downHipHighI+2;i<throughHipHighI;i++){
     const diff = Math.abs(wristPt(frames[i].lm).y - addressWristY);
-    if(diff < bestYDiff){ bestYDiff = diff; impactI = i; }
+    if(diff < bestYDiff - IMPACT_RISE_EPS*0.2){
+      bestYDiff = diff; impactI = i; sinceMin = 0;
+    } else if(diff > bestYDiff + IMPACT_RISE_EPS){
+      sinceMin++;
+      if(sinceMin >= IMPACT_CONFIRM_FRAMES) break;
+    } else {
+      sinceMin = 0;
+    }
   }
-  const impactClamped = Math.min(Math.max(impactI, downHipHighI+1), throughHipHighI-1);
+  const impactClamped = Math.min(Math.max(impactI, downHipHighI+1), Math.max(throughHipHighI-1, downHipHighI+1));
 
   keyIdx = {
     address:addressI,
