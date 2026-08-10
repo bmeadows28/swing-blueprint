@@ -864,14 +864,13 @@ function detectKeyframes(){
     }
   }
 
-  // Transition (hip-high on the way down) is intentionally anchored to the
-  // OLD full-2D position-match value below, not the height-only Impact
-  // frame above — Transition was already landing well, and since it's
-  // computed as a fraction of the Top-to-Impact path, letting it ride on
-  // Impact's frame would shift Transition every time Impact's detection is
-  // retuned, even when Transition itself isn't the problem. Keeping this as
-  // a separate, internal reference point (never shown as its own
-  // checkpoint) means fixing Impact can't quietly move Transition too.
+  // Transition (hip-high on the way down) is anchored to this internal
+  // reference point (a full-2D closest-position-match to address) rather
+  // than directly to the Impact checkpoint below — Transition is computed
+  // as a fraction of the Top-to-this-point path, so keeping it as its own
+  // named value (even though Impact currently reuses the same number)
+  // means any future change to how Impact is detected can't silently move
+  // Transition along with it.
   const addressWrist = wristPt(frames[0].lm);
   let transitionAnchorI = topI+1, bestPosDiff = Infinity;
   for(let i=topI+1;i<n;i++){
@@ -934,39 +933,18 @@ function detectKeyframes(){
   // end of the frames array entirely.
   const throughHipHighI = Math.min(Math.max(findByArcFraction(swingLowI, finishI, 0.35), downHipHighI+2), finishI);
 
-  // Impact: matching hand height to address is the physically meaningful
-  // signal (the ball sits at one fixed height throughout, so it's a stable,
-  // camera-honest reference that generalizes across different swings/tempos
-  // in a way a fixed time-fraction wouldn't), searched only within the span
-  // between Transition and Release — both already confirmed accurate — so a
-  // frame outside the actual hitting zone can't be considered at all.
-  //
-  // Within that window, take the FIRST local minimum of the height
-  // difference (confirmed by a clear, sustained move away from it), not the
-  // single closest match across the whole window. On a short clip there may
-  // only be a handful of sampled frames covering the whole downswing/
-  // follow-through, and scanning the entire window for a global best can
-  // get pulled toward a frame that's coincidentally close in height much
-  // later — well into the follow-through, after the hands have already
-  // risen back up and rotation has continued opening up — rather than the
-  // true, earliest crossing right at the ball.
-  const addressWristY = wristPt(frames[0].lm).y;
-  const IMPACT_CONFIRM_FRAMES = 2, IMPACT_RISE_EPS = 0.01;
-  let impactI = downHipHighI+1;
-  let bestYDiff = Math.abs(wristPt(frames[impactI].lm).y - addressWristY);
-  let sinceMin = 0;
-  for(let i=downHipHighI+2;i<throughHipHighI;i++){
-    const diff = Math.abs(wristPt(frames[i].lm).y - addressWristY);
-    if(diff < bestYDiff - IMPACT_RISE_EPS*0.2){
-      bestYDiff = diff; impactI = i; sinceMin = 0;
-    } else if(diff > bestYDiff + IMPACT_RISE_EPS){
-      sinceMin++;
-      if(sinceMin >= IMPACT_CONFIRM_FRAMES) break;
-    } else {
-      sinceMin = 0;
-    }
-  }
-  const impactClamped = Math.min(Math.max(impactI, downHipHighI+1), Math.max(throughHipHighI-1, downHipHighI+1));
+  // Impact: at the moment the club meets the ball, the hands return to
+  // essentially the same spot they started at address — the full-2D (reach
+  // AND height) closest-position-match to address, computed above as
+  // transitionAnchorClamped. This measured closest to true impact on
+  // validation data; later attempts to refine it (height-only matching,
+  // various bounded search windows) each moved it further from the mark on
+  // real footage, so reverting to this version specifically. Reusing
+  // transitionAnchorClamped directly (rather than a second, separate
+  // search) means Impact and Transition's internal anchor are guaranteed
+  // identical, and Transition's own frame (downHipHighI, computed above,
+  // already independent of Impact) is completely unaffected either way.
+  const impactClamped = transitionAnchorClamped;
 
   keyIdx = {
     address:addressI,
