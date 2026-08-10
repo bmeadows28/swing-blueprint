@@ -954,7 +954,20 @@ function detectKeyframes(){
     const diff = dist(indexPt(frames[i].lm), addressIndex);
     if(diff < bestIndexDiff){ bestIndexDiff = diff; impactI = i; }
   }
-  const impactClamped = Math.max(impactI, topI+1);
+  // Confirmed against real footage (comparing the detected frame directly
+  // against the true impact frame on the video's own scrubber): the raw
+  // closest-match frame consistently lands a couple of frames early. Motion
+  // blur is worst right at true impact — the fastest moment of the swing —
+  // so the pose model's landmark reading exactly there is often the least
+  // reliable, while a frame or two earlier (less blurred, more confidently
+  // tracked) can coincidentally score as a slightly better position match
+  // without actually being closer to the ball. A small fixed nudge forward
+  // compensates directly.
+  const IMPACT_BLUR_NUDGE_FRAMES = 2;
+  // Capped below Release (computed above, independent of Impact) so the
+  // nudge can't push Impact all the way into, or past, the Release frame
+  // on a short/tightly-spaced clip.
+  const impactClamped = Math.min(Math.max(impactI + IMPACT_BLUR_NUDGE_FRAMES, topI+1), Math.min(n-1, throughHipHighI-1));
 
   keyIdx = {
     address:addressI,
