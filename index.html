@@ -926,28 +926,29 @@ function detectKeyframes(){
   const backHipHighI = findByArcFraction(addressI, topClamped, 0.28);
   const downHipHighI = findByArcFraction(topClamped, transitionAnchorClamped, 0.78);
 
-  // Impact: at the moment the club meets the ball, the hands are back at
-  // essentially the same HEIGHT they started at address (the ball sits at
-  // one fixed height throughout, so this is a stable, camera-angle-honest
-  // reference) — searched only WITHIN the hitting zone bounded by the two
-  // checkpoints already confirmed accurate: after Transition, up through
-  // the swing's true low point (the same frame Release is anchored to).
-  // Searching the full post-Top range previously let an early frame outside
-  // this zone (still descending, before Transition) numerically out-match
-  // the true impact frame on address height by chance/noise — bounding the
-  // search here rules that out directly, rather than clamping the result
-  // after the fact.
+  // Release is anchored to the swing's true low point directly, fully
+  // independent of Impact below — Impact is now derived FROM Transition
+  // and Release, so Release can't also depend on Impact without creating a
+  // circular relationship.
+  const throughHipHighI = Math.max(findByArcFraction(swingLowI, finishI, 0.35), downHipHighI+2);
+
+  // Impact: matching hand height to address is the physically meaningful
+  // signal (the ball sits at one fixed height throughout, so it's a stable,
+  // camera-honest reference that generalizes across different swings/tempos
+  // in a way a fixed time-fraction wouldn't). It's searched only within the
+  // FULL span between Transition and Release — both already confirmed
+  // accurate and computed independently of Impact — so a frame outside the
+  // actual hitting zone can't win a close height match by chance. Using the
+  // whole Transition-to-Release span (not just up to the swing's single
+  // lowest-point frame) keeps this window from ever collapsing too tight to
+  // find a meaningful best match.
   const addressWristY = wristPt(frames[0].lm).y;
-  const impactSearchLo = Math.min(downHipHighI + 1, n-1);
-  const impactSearchHi = Math.min(Math.max(impactSearchLo, swingLowI), n-1);
-  let impactI = impactSearchLo, bestYDiff = Infinity;
-  for(let i=impactSearchLo;i<=impactSearchHi;i++){
+  let impactI = downHipHighI+1, bestYDiff = Infinity;
+  for(let i=downHipHighI+1;i<throughHipHighI;i++){
     const diff = Math.abs(wristPt(frames[i].lm).y - addressWristY);
     if(diff < bestYDiff){ bestYDiff = diff; impactI = i; }
   }
-  const impactClamped = impactI;
-  const releaseAnchorI = Math.max(swingLowI, impactClamped);
-  const throughHipHighI = Math.max(findByArcFraction(releaseAnchorI, finishI, 0.35), impactClamped+1);
+  const impactClamped = Math.min(Math.max(impactI, downHipHighI+1), throughHipHighI-1);
 
   keyIdx = {
     address:addressI,
