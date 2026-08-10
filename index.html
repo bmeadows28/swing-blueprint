@@ -864,25 +864,6 @@ function detectKeyframes(){
     }
   }
 
-  // Impact: at the moment the club meets the ball, the hands are back at
-  // essentially the same HEIGHT they started at address (the ball sits at
-  // one fixed height throughout, so this is a stable, camera-angle-honest
-  // reference). Matching full 2D position (reach AND height) to address was
-  // tried, but on real footage the reach/x reading is noisier than height —
-  // small perspective and depth shifts through the downswing can put a
-  // wrong, too-early frame's (x,y) pair transiently closer to address
-  // than the true impact frame's, dragging Impact toward Transition.
-  // Matching height alone avoids that noise while still ruling out a later,
-  // deeper post-impact dip (extension can carry the hands a beat past the
-  // ball before they rise into the finish) — a dip like that overshoots
-  // past address height rather than matching it, so it won't win.
-  const addressWristY = wristPt(frames[0].lm).y;
-  let impactI = topI+1, bestYDiff = Infinity;
-  for(let i=topI+1;i<n;i++){
-    const diff = Math.abs(wristPt(frames[i].lm).y - addressWristY);
-    if(diff < bestYDiff){ bestYDiff = diff; impactI = i; }
-  }
-
   // Transition (hip-high on the way down) is intentionally anchored to the
   // OLD full-2D position-match value below, not the height-only Impact
   // frame above — Transition was already landing well, and since it's
@@ -944,9 +925,27 @@ function detectKeyframes(){
   }
   const backHipHighI = findByArcFraction(addressI, topClamped, 0.28);
   const downHipHighI = findByArcFraction(topClamped, transitionAnchorClamped, 0.78);
-  // Floored at Transition+1 so a height-matched Impact can never land before
-  // (or on top of) the Transition frame above, even on an unusual clip.
-  const impactClamped = Math.max(impactI, downHipHighI+1);
+
+  // Impact: at the moment the club meets the ball, the hands are back at
+  // essentially the same HEIGHT they started at address (the ball sits at
+  // one fixed height throughout, so this is a stable, camera-angle-honest
+  // reference) — searched only WITHIN the hitting zone bounded by the two
+  // checkpoints already confirmed accurate: after Transition, up through
+  // the swing's true low point (the same frame Release is anchored to).
+  // Searching the full post-Top range previously let an early frame outside
+  // this zone (still descending, before Transition) numerically out-match
+  // the true impact frame on address height by chance/noise — bounding the
+  // search here rules that out directly, rather than clamping the result
+  // after the fact.
+  const addressWristY = wristPt(frames[0].lm).y;
+  const impactSearchLo = Math.min(downHipHighI + 1, n-1);
+  const impactSearchHi = Math.min(Math.max(impactSearchLo, swingLowI), n-1);
+  let impactI = impactSearchLo, bestYDiff = Infinity;
+  for(let i=impactSearchLo;i<=impactSearchHi;i++){
+    const diff = Math.abs(wristPt(frames[i].lm).y - addressWristY);
+    if(diff < bestYDiff){ bestYDiff = diff; impactI = i; }
+  }
+  const impactClamped = impactI;
   const releaseAnchorI = Math.max(swingLowI, impactClamped);
   const throughHipHighI = Math.max(findByArcFraction(releaseAnchorI, finishI, 0.35), impactClamped+1);
 
